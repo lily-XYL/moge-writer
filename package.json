@@ -1,0 +1,49 @@
+{
+  "name": "moge-writer",
+  "productName": "墨阁写作工坊",
+  "version": "1.0.0",
+  "description": "墨阁 · 离线网文写作工坊（免安装版）",
+  "main": "main.js",
+  "author": "moge",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "dist": "electron-builder --win portable --publish never"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.moge.writer",
+    "productName": "墨阁写作工坊",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "build/icon.png",
+      "README.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "墨阁写作工坊-免安装版.exe"
+    }
+  }
+}
