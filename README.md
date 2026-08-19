@@ -92,3 +92,7 @@ novel-studio/
 ## 隐私声明
 
 本软件 100% 离线运行：无网络请求、无账号系统、无统计上报。你的稿子只存在于你自己的设备上。
+
+## 开源
+本项目已在 GitHub 开源（MIT License）：https://github.com/lily-XYL/moge-writer 
+欢迎 Star、Issue 与贡献。
