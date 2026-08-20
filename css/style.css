@@ -281,12 +281,12 @@ body.editor-mode { overflow: hidden; }
 #ed-pause { white-space: nowrap; }
 .goal-bar { width: 160px; height: 6px; background: var(--bg-2); border-radius: 99px; overflow: hidden; }
 .goal-bar .fill { height: 100%; background: linear-gradient(90deg, var(--accent), #a855f7); border-radius: 99px; transition: width .3s; }
-.outline-panel { border-bottom: 1px solid var(--line); background: var(--warn-soft); padding: 10px 22px 8px; }
-.outline-panel .label { margin: 0 0 4px; color: var(--warn); }
-.outline-panel textarea { background: transparent; border-color: transparent; font-size: 13px; min-height: 56px; }
+.outline-panel { border-bottom: 1px solid var(--line); background: var(--warn-soft); padding: 12px 28px 10px; }
+.outline-panel .label { margin: 0 0 5px; color: var(--warn); }
+.outline-panel textarea { width: 100%; background: transparent; border-color: transparent; font-size: 14px; min-height: 76px; }
 .outline-panel textarea:focus { border-color: var(--warn); background: var(--bg-soft); }
-.op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; }
-@media (max-width: 1100px) { .op-grid { grid-template-columns: 1fr; } }
+.op-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; width: 100%; }
+@media (max-width: 700px) { .outline-panel { padding: 10px 16px 8px; } .outline-panel textarea { min-height: 64px; } }
 
 /* ============ 码字模式 ============ */
 .focus-mode {

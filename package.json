@@ -1,7 +1,7 @@
 {
   "name": "moge-writer-plus",
   "productName": "墨阁写作工坊·修复版",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "墨阁写作工坊·修复版：离线网文写作项目",
   "main": "main.js",
   "author": "moge",
