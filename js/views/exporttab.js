@@ -7,7 +7,7 @@
   Views.exporttab = {
     render(el) {
       const w = App.data.work;
-      const chs = App.data.chapters.slice().sort((a, b) => (a.sort || 0) - (b.sort || 0));
+      const chs = App.getOrderedChapters();
       el.innerHTML =
         '<div class="two-col">' +
         '<div class="card"><div class="card-title">全文导出</div>' +
@@ -110,8 +110,8 @@
   async function workDump() {
     const workId = App.state.workId;
     const w = await DB.get('works', workId);
-    const stores = ['volumes', 'chapters', 'characters', 'entries', 'outlines', 'foreshadows', 'timeline', 'ideas', 'dailyStats'];
-    const data = { app: 'moge-studio', version: 1, exportedAt: new Date().toISOString(), workId: workId };
+    const stores = ['volumes', 'chapters', 'characters', 'entries', 'outlines', 'foreshadows', 'timeline', 'ideas', 'dailyStats', 'relationGraphs'];
+    const data = { app: 'moge-studio', version: 2, scope: 'work', exportedAt: new Date().toISOString(), workId: workId };
     data.works = w ? [w] : [];
     for (const s of stores) {
       data[s] = await DB.getByIndex(s, 'workId', workId);

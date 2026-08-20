@@ -5,6 +5,37 @@
 
   let ctx = null; /* 当前编辑上下文 {ch, ta, titleEl, outlineEl, prevEl, dirty} */
   let timerInt = null; /* 写作计时器 */
+  const VERSION_LIMIT = 30;
+  const VERSION_INTERVAL = 90 * 1000;
+
+  function versionPayload(ch) {
+    return {
+      title: ch.title || '', content: ch.content || '', outline: ch.outline || '', notes: ch.notes || '',
+      wordCount: ch.wordCount || 0, status: ch.status || 'draft', volumeId: ch.volumeId || ''
+    };
+  }
+  function versionFingerprint(data) {
+    return [data.title, data.content, data.outline, data.notes, data.status, data.volumeId].join('\u0001');
+  }
+  function changedVersion(before, after) {
+    return versionFingerprint(before) !== versionFingerprint(after);
+  }
+  async function saveChapterVersion(ch, before, opts) {
+    opts = opts || {};
+    if (!before || (!opts.forceSnapshot && !changedVersion(before, versionPayload(ch)))) return false;
+    const versions = (await DB.getByIndex('chapterVersions', 'chapterId', ch.id)).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    const fingerprint = versionFingerprint(before);
+    if (versions[0] && versions[0].fingerprint === fingerprint) return false;
+    if (!opts.force && versions[0] && Date.now() - (versions[0].savedAt || 0) < VERSION_INTERVAL) return false;
+    const version = Object.assign({
+      id: U.uid(), chapterId: ch.id, workId: ch.workId, savedAt: Date.now(),
+      reason: opts.reason || '自动保存', fingerprint: fingerprint
+    }, before);
+    await DB.put('chapterVersions', version);
+    const stale = versions.slice(VERSION_LIMIT - 1);
+    if (stale.length) await Promise.all(stale.map(v => DB.del('chapterVersions', v.id)));
+    return true;
+  }
 
   /* ---------- 码字时长 / 速率 / 暂停计时 ---------- */
   function ensureSession() {
@@ -92,6 +123,7 @@
 
   function doSave(c, flush) {
     if (!c) return Promise.resolve();
+    const before = versionPayload(c.ch);
     const content = c.ta ? c.ta.value : (c.ch.content || '');
     const title = c.titleEl ? c.titleEl.value : (c.ch.title || '');
     const newWords = U.countWords(content);
@@ -101,7 +133,7 @@
     c.ch.wordCount = newWords;
     c.ch.updatedAt = Date.now();
     c.dirty = false;
-    const tasks = [DB.put('chapters', c.ch)];
+    const tasks = [DB.put('chapters', c.ch), saveChapterVersion(c.ch, before, { force: !!flush, reason: flush ? '手动保存' : '自动保存' })];
     if (delta) tasks.push(App.recordWordsDelta(App.state.workId, delta));
     if (App.data.work) {
       App.data.work.updatedAt = Date.now();
@@ -114,9 +146,11 @@
 
   function saveMeta(c) {
     if (!c) return;
+    const before = versionPayload(c.ch);
     if (c.outlineEl) c.ch.outline = c.outlineEl.value;
     if (c.notesEl) c.ch.notes = c.notesEl.value;
-    return DB.put('chapters', c.ch);
+    c.ch.updatedAt = Date.now();
+    return Promise.all([DB.put('chapters', c.ch), saveChapterVersion(c.ch, before, { reason: '自动保存' })]);
   }
 
   Views.editor = {
@@ -183,6 +217,7 @@
       '<button class="btn small" data-action="edNext" title="下一章">→</button>' +
       '<button class="btn small' + (App.state.edOutline ? ' active' : '') + '" data-action="edToggleOutline">细纲</button>' +
       '<button class="btn small" data-action="edToggleCheck">检查</button>' +
+      '<button class="btn small" data-action="edHistory">历史</button>' +
       '<button class="btn small" data-action="edTogglePreview">预览</button>' +
       '<span class="topbar-spacer"></span>' +
       '<span class="save-state" id="ed-save-state">—</span>' +
@@ -261,7 +296,7 @@
   function goAdjacent(dir) {
     if (!ctx) return;
     doSave(ctx, true);
-    const chs = App.data.chapters.slice().sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    const chs = App.getOrderedChapters();
     const i = chs.findIndex(c => c.id === ctx.ch.id);
     const j = Math.max(0, Math.min(chs.length - 1, i + dir));
     if (j === i) { UI.toast(dir > 0 ? '已经是最后一章' : '已经是第一章', 'warn'); return; }
@@ -382,6 +417,78 @@
     doSave(ctx, true);
     runCheck();
     UI.toast('已替换');
+  };
+
+  /* ---------- 章节版本历史 ---------- */
+  function versionTime(version) {
+    return U.fmtDate(version.savedAt || Date.now());
+  }
+  function versionReason(version) {
+    return version.reason === '回滚前备份' ? '回滚前备份' : (version.reason || '自动保存');
+  }
+  function versionExcerpt(version) {
+    const text = (version.content || '').replace(/\s+/g, ' ').trim();
+    return text ? U.short(text, 96) : '（当时正文为空）';
+  }
+  async function openChapterHistory() {
+    if (!ctx) return;
+    const versions = (await DB.getByIndex('chapterVersions', 'chapterId', ctx.ch.id)).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    App._chapterVersions = versions;
+    const currentWords = U.countWords(ctx.ta ? ctx.ta.value : ctx.ch.content || '');
+    const rows = versions.length ? versions.map(v =>
+      '<div class="version-row">' +
+      '<div class="version-main"><b>' + U.escapeHtml(versionTime(v)) + '</b><span class="version-badge">' + U.escapeHtml(versionReason(v)) + '</span>' +
+      '<div class="hint">' + U.wcText(v.wordCount || 0) + ' 字 · ' + U.escapeHtml(v.title || '无题章节') + '</div>' +
+      '<div class="version-excerpt">' + U.escapeHtml(versionExcerpt(v)) + '</div></div>' +
+      '<div class="version-actions"><button class="btn small" data-action="edHistoryCompare" data-id="' + v.id + '">对比</button>' +
+      '<button class="btn small danger" data-action="edHistoryRollback" data-id="' + v.id + '">回滚</button></div>' +
+      '</div>'
+    ).join('') : '<div class="empty" style="padding:28px 10px">还没有历史版本。正文、标题、细纲或备注发生保存后会自动创建快照。</div>';
+    UI.openModal('<h3 style="margin:0 0 4px">章节版本历史</h3>' +
+      '<div class="hint" style="margin-bottom:12px">当前版本：' + U.wcText(currentWords) + ' 字 · 最多保留最近 ' + VERSION_LIMIT + ' 个快照。回滚前会自动再备份当前内容。</div>' +
+      '<div class="version-list">' + rows + '</div>', { wide: true });
+  }
+  Actions['edHistory'] = async () => {
+    if (!ctx) return;
+    await doSave(ctx, true);
+    await openChapterHistory();
+  };
+  Actions['edHistoryCompare'] = t => {
+    if (!ctx) return;
+    const version = (App._chapterVersions || []).find(v => v.id === t.dataset.id);
+    if (!version) return;
+    const current = versionPayload(ctx.ch);
+    UI.openModal('<h3 style="margin:0 0 4px">版本内容对比</h3>' +
+      '<div class="hint" style="margin-bottom:12px">左侧为选定历史版本，右侧为当前版本。</div>' +
+      '<div class="version-compare">' +
+      '<section><b>历史 · ' + U.escapeHtml(versionTime(version)) + '</b><span class="hint"> · ' + U.wcText(version.wordCount || 0) + ' 字</span>' +
+      '<pre>' + U.escapeHtml(version.content || '（空）') + '</pre></section>' +
+      '<section><b>当前</b><span class="hint"> · ' + U.wcText(current.wordCount || 0) + ' 字</span>' +
+      '<pre>' + U.escapeHtml(current.content || '（空）') + '</pre></section>' +
+      '</div><div class="modal-foot" style="padding:16px 0 0;justify-content:flex-end">' +
+      '<button class="btn" data-action="modal-close">关闭</button></div>', { wide: true });
+  };
+  Actions['edHistoryRollback'] = t => {
+    if (!ctx) return;
+    const version = (App._chapterVersions || []).find(v => v.id === t.dataset.id);
+    if (!version) return;
+    UI.confirmDialog('回滚章节', '将恢复到 ' + versionTime(version) + ' 的版本。当前内容会先自动保存为一个历史快照。', async () => {
+      if (!ctx) return;
+      const before = versionPayload(ctx.ch);
+      await saveChapterVersion(ctx.ch, before, { force: true, forceSnapshot: true, reason: '回滚前备份' });
+      const oldWords = ctx.ch.wordCount || 0;
+      Object.assign(ctx.ch, {
+        title: version.title || '', content: version.content || '', outline: version.outline || '', notes: version.notes || '',
+        wordCount: version.wordCount || 0, status: version.status || 'draft', volumeId: version.volumeId || '', updatedAt: Date.now()
+      });
+      const delta = (ctx.ch.wordCount || 0) - oldWords;
+      const tasks = [DB.put('chapters', ctx.ch)];
+      if (delta) tasks.push(App.recordWordsDelta(ctx.ch.workId, delta));
+      if (App.data.work) { App.data.work.updatedAt = Date.now(); tasks.push(DB.put('works', App.data.work)); }
+      await Promise.all(tasks);
+      UI.toast('已回滚章节，并保存回滚前版本');
+      Views.editor.render(U.$('#main'), ctx.ch.workId, ctx.ch.id);
+    }, '确认回滚');
   };
 
   /* ---------- 码字模式 ---------- */

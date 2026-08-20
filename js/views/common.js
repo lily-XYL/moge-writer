@@ -71,6 +71,30 @@ window.UI = (() => {
   const U = window.Util;
   const DB = window.DB;
 
+  function bySortThenId(a, b) {
+    const sortDiff = (a.sort || 0) - (b.sort || 0);
+    if (sortDiff) return sortDiff;
+    const createdDiff = (a.createdAt || 0) - (b.createdAt || 0);
+    if (createdDiff) return createdDiff;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }
+
+  /* 统一书稿顺序：卷顺序 → 卷内章节顺序 → 未分卷/残留章节。 */
+  App.orderChapters = function (volumes, chapters) {
+    const orderedVolumes = (volumes || []).slice().sort(bySortThenId);
+    const allChapters = chapters || [];
+    const knownVolumeIds = new Set(orderedVolumes.map(v => v.id));
+    const ordered = [];
+    orderedVolumes.forEach(v => {
+      ordered.push(...allChapters.filter(c => c.volumeId === v.id).sort(bySortThenId));
+    });
+    ordered.push(...allChapters.filter(c => !c.volumeId || !knownVolumeIds.has(c.volumeId)).sort(bySortThenId));
+    return ordered;
+  };
+  App.getOrderedChapters = function () {
+    return App.orderChapters(App.data.volumes || [], App.data.chapters || []);
+  };
+
   App.loadWorkData = async function (workId) {
     const [work, volumes, chapters, characters, entries, outlines, foreshadows, timeline, ideas, daily, graphs] = await Promise.all([
       DB.get('works', workId),
@@ -85,11 +109,11 @@ window.UI = (() => {
       DB.getByIndex('dailyStats', 'workId', workId),
       DB.getByIndex('relationGraphs', 'workId', workId)
     ]);
-    const bySort = (a, b) => (a.sort || 0) - (b.sort || 0);
+    const bySort = (a, b) => bySortThenId(a, b);
     App.data = {
       work: work || null,
       volumes: volumes.sort(bySort),
-      chapters: chapters.sort(bySort),
+      chapters: App.orderChapters(volumes, chapters),
       characters: characters.sort(bySort),
       entries: entries.sort(bySort),
       outlines: outlines.sort(bySort),

@@ -1,8 +1,8 @@
 /* ============ 墨阁 · 本地数据库（IndexedDB，完全离线） ============ */
 window.DB = (() => {
   const DB_NAME = 'moge-studio';
-  const DB_VERSION = 2;
-  const STORES = ['works', 'volumes', 'chapters', 'characters', 'entries', 'outlines',
+  const DB_VERSION = 3;
+  const STORES = ['works', 'volumes', 'chapters', 'chapterVersions', 'characters', 'entries', 'outlines',
     'foreshadows', 'timeline', 'ideas', 'dailyStats', 'settings', 'backups', 'relationGraphs'];
 
   let dbPromise = null;
@@ -24,6 +24,7 @@ window.DB = (() => {
         mk('works', 'id');
         mk('volumes', 'id', ['workId']);
         mk('chapters', 'id', ['workId', 'volumeId']);
+        mk('chapterVersions', 'id', ['chapterId', 'workId']);
         mk('characters', 'id', ['workId']);
         mk('entries', 'id', ['workId']);
         mk('outlines', 'id', ['workId']);
@@ -90,8 +91,27 @@ window.DB = (() => {
       tx.onerror = () => rej(tx.error);
     }));
   }
-  function wipe() {
-    return Promise.all(STORES.map(clearStore));
+  /* 对多个表在同一事务内执行清空与写入，任一写入失败时整批回滚。 */
+  function applyBatch(recordsByStore, clearStores) {
+    const names = Object.keys(recordsByStore || {});
+    if (!names.length) return Promise.resolve(0);
+    const clears = new Set(clearStores || []);
+    return open().then(db => new Promise((res, rej) => {
+      let tx;
+      try { tx = db.transaction(names, 'readwrite'); } catch (e) { rej(e); return; }
+      let count = 0;
+      names.forEach(name => {
+        const store = tx.objectStore(name);
+        if (clears.has(name)) store.clear();
+        (recordsByStore[name] || []).forEach(record => { store.put(record); count++; });
+      });
+      tx.oncomplete = () => res(count);
+      tx.onerror = () => rej(tx.error || new Error('数据库写入失败'));
+      tx.onabort = () => rej(tx.error || new Error('数据库事务已中止'));
+    }));
   }
-  return { open, getAll, getByIndex, get, put, putMany, del, clearStore, wipe, STORES };
+  function wipe() {
+    return applyBatch(Object.fromEntries(STORES.map(s => [s, []])), STORES);
+  }
+  return { open, getAll, getByIndex, get, put, putMany, del, clearStore, applyBatch, wipe, STORES };
 })();

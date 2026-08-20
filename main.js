@@ -4,7 +4,7 @@ const path = require('path');
 
 let win = null;
 
-app.setAppUserModelId('com.moge.writer');
+app.setAppUserModelId('com.moge.writer.plus');
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {

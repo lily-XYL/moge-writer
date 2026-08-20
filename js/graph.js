@@ -88,10 +88,152 @@ window.GraphData = (() => {
     });
   }
 
+  /* 力导向自动布局：优先缩短已有关系，同时通过节点排斥和组件分区尽量减少交叉。 */
+  function autoLayout(graph, options) {
+    if (!graph || !graph.nodes || !graph.nodes.length) return;
+    const opts = Object.assign({ idealDistance: 150, iterations: 180, nodeGap: 64, componentGap: 220 }, options || {});
+    const ids = graph.nodes.map(n => n.charId);
+    const nodeById = new Map(graph.nodes.map(n => [n.charId, n]));
+    const adj = new Map(ids.map(id => [id, new Set()]));
+    (graph.edges || []).forEach(e => {
+      if (!adj.has(e.from) || !adj.has(e.to) || e.from === e.to) return;
+      adj.get(e.from).add(e.to);
+      adj.get(e.to).add(e.from);
+    });
+
+    const components = [];
+    const visited = new Set();
+    ids.forEach(seed => {
+      if (visited.has(seed)) return;
+      const queue = [seed], component = [];
+      visited.add(seed);
+      while (queue.length) {
+        const id = queue.shift();
+        component.push(id);
+        adj.get(id).forEach(next => {
+          if (!visited.has(next)) { visited.add(next); queue.push(next); }
+        });
+      }
+      components.push(component);
+    });
+    components.sort((a, b) => b.length - a.length || String(a[0]).localeCompare(String(b[0])));
+
+    const laidOut = components.map(component => {
+      const ordered = component.slice().sort((a, b) => {
+        const d = adj.get(b).size - adj.get(a).size;
+        return d || String(a).localeCompare(String(b));
+      });
+      const pos = new Map();
+      if (ordered.length === 1) {
+        pos.set(ordered[0], { x: 0, y: 0 });
+      } else {
+        const radius = Math.max(opts.idealDistance * 0.7, ordered.length * 24);
+        ordered.forEach((id, i) => {
+          const angle = -Math.PI / 2 + i / ordered.length * Math.PI * 2;
+          pos.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+        });
+        const componentSet = new Set(component);
+        for (let step = 0; step < opts.iterations; step++) {
+          const disp = new Map(ordered.map(id => [id, { x: 0, y: 0 }]));
+          for (let i = 0; i < ordered.length; i++) {
+            for (let j = i + 1; j < ordered.length; j++) {
+              const a = pos.get(ordered[i]), b = pos.get(ordered[j]);
+              let dx = a.x - b.x, dy = a.y - b.y;
+              let dist2 = dx * dx + dy * dy;
+              if (dist2 < 0.01) { dx = (i + 1) * 0.01; dy = (j + 1) * 0.01; dist2 = dx * dx + dy * dy; }
+              const dist = Math.sqrt(dist2);
+              const push = Math.min(9000 / dist2, 16);
+              const ux = dx / dist, uy = dy / dist;
+              disp.get(ordered[i]).x += ux * push;
+              disp.get(ordered[i]).y += uy * push;
+              disp.get(ordered[j]).x -= ux * push;
+              disp.get(ordered[j]).y -= uy * push;
+            }
+          }
+          (graph.edges || []).forEach(edge => {
+            if (!componentSet.has(edge.from) || !componentSet.has(edge.to)) return;
+            const a = pos.get(edge.from), b = pos.get(edge.to);
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+            const pull = (dist - opts.idealDistance) * 0.025;
+            const ux = dx / dist, uy = dy / dist;
+            disp.get(edge.from).x += ux * pull;
+            disp.get(edge.from).y += uy * pull;
+            disp.get(edge.to).x -= ux * pull;
+            disp.get(edge.to).y -= uy * pull;
+          });
+          const cooling = 1 - step / opts.iterations;
+          const maxMove = 9 * cooling + 1.5;
+          ordered.forEach(id => {
+            const p = pos.get(id), d = disp.get(id);
+            const mag = Math.max(1, Math.sqrt(d.x * d.x + d.y * d.y));
+            p.x += d.x / mag * Math.min(mag, maxMove);
+            p.y += d.y / mag * Math.min(mag, maxMove);
+          });
+        }
+      }
+      const componentSet = new Set(component);
+      const componentEdges = (graph.edges || []).filter(e => componentSet.has(e.from) && componentSet.has(e.to));
+      const cross = (p1, p2, p3, p4) => {
+        const orient = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        const a1 = orient(p1, p2, p3), a2 = orient(p1, p2, p4), a3 = orient(p3, p4, p1), a4 = orient(p3, p4, p2);
+        return (a1 * a2 < 0) && (a3 * a4 < 0);
+      };
+      const layoutScore = () => {
+        let length = 0, crossings = 0;
+        componentEdges.forEach(e => {
+          const a = pos.get(e.from), b = pos.get(e.to);
+          length += Math.hypot(a.x - b.x, a.y - b.y);
+        });
+        for (let i = 0; i < componentEdges.length; i++) {
+          for (let j = i + 1; j < componentEdges.length; j++) {
+            const e1 = componentEdges[i], e2 = componentEdges[j];
+            if (e1.from === e2.from || e1.from === e2.to || e1.to === e2.from || e1.to === e2.to) continue;
+            if (cross(pos.get(e1.from), pos.get(e1.to), pos.get(e2.from), pos.get(e2.to))) crossings++;
+          }
+        }
+        return length + crossings * opts.idealDistance * 3;
+      };
+      let bestScore = layoutScore();
+      const swaps = Math.min(120, ordered.length * ordered.length * 2);
+      for (let step = 0; step < swaps; step++) {
+        const i = step % ordered.length;
+        const j = (step * 7 + 3) % ordered.length;
+        if (i === j) continue;
+        const left = ordered[i], right = ordered[j], leftPos = pos.get(left), rightPos = pos.get(right);
+        pos.set(left, rightPos); pos.set(right, leftPos);
+        const candidate = layoutScore();
+        if (candidate < bestScore) bestScore = candidate;
+        else { pos.set(left, leftPos); pos.set(right, rightPos); }
+      }
+      const points = ordered.map(id => pos.get(id));
+      const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+      const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+      points.forEach(p => { p.x -= cx; p.y -= cy; });
+      const span = Math.max(1, Math.max(...points.map(p => Math.max(Math.abs(p.x), Math.abs(p.y)))));
+      return { ordered, pos, span };
+    });
+
+    const columns = Math.max(1, Math.ceil(Math.sqrt(laidOut.length)));
+    const maxSpan = Math.max(...laidOut.map(item => item.span));
+    const cell = maxSpan * 2 + opts.componentGap;
+    laidOut.forEach((item, index) => {
+      const col = index % columns;
+      const row = Math.floor(index / columns);
+      const offsetX = (col - (columns - 1) / 2) * cell;
+      const offsetY = (row - (Math.ceil(laidOut.length / columns) - 1) / 2) * cell;
+      item.ordered.forEach(id => {
+        const p = item.pos.get(id), node = nodeById.get(id);
+        node.x = Math.round(p.x + offsetX);
+        node.y = Math.round(p.y + offsetY);
+      });
+    });
+  }
+
   function nodePos(graph, charId) {
     if (!graph) return null;
     return graph.nodes.find(n => n.charId === charId) || null;
   }
 
-  return { createGraph, addNode, removeNode, addEdge, removeEdge, migrate, cleanup, circularLayout, nodePos };
+  return { createGraph, addNode, removeNode, addEdge, removeEdge, migrate, cleanup, circularLayout, autoLayout, nodePos };
 })();

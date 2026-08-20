@@ -1,8 +1,8 @@
 {
-  "name": "moge-writer",
-  "productName": "墨阁写作工坊",
-  "version": "1.0.0",
-  "description": "墨阁 · 离线网文写作工坊（免安装版）",
+  "name": "moge-writer-plus",
+  "productName": "墨阁写作工坊·修复版",
+  "version": "1.4.0",
+  "description": "墨阁写作工坊·修复版：离线网文写作项目",
   "main": "main.js",
   "author": "moge",
   "license": "MIT",
@@ -17,8 +17,8 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.moge.writer",
-    "productName": "墨阁写作工坊",
+    "appId": "com.moge.writer.plus",
+    "productName": "墨阁写作工坊·修复版",
     "directories": {
       "output": "dist"
     },
@@ -43,7 +43,7 @@
       "icon": "build/icon.png"
     },
     "portable": {
-      "artifactName": "墨阁写作工坊-免安装版.exe"
+      "artifactName": "墨阁写作工坊-修复版.exe"
     }
   }
 }

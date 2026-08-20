@@ -3,6 +3,7 @@
   const U = window.Util;
   const DB = window.DB;
   const D = window.Data;
+  const Ex = window.Export;
 
   function colorOf(str) {
     const colors = D.COVER_COLORS;
@@ -22,7 +23,7 @@
         '</div>' +
         '<span class="topbar-spacer"></span>' +
         (seg === 'graph'
-          ? '<button class="btn primary" data-action="graphAddChar">＋ 添加人物</button>'
+          ? '<button class="btn primary" data-action="graphNewCharSetting">＋ 新建人物设定</button>'
           : '<button class="btn primary" data-action="worldNew">＋ 新建设定</button>') +
         '</div>' +
         '<div id="world-body"></div>';
@@ -146,18 +147,96 @@
     gPanY = h / 2 - cy;
   }
 
+  function graphExportData() {
+    const svg = graphSvg();
+    const graph = App.getGraph();
+    if (!svg || !graph.nodes.length) return null;
+    const pad = 72;
+    const xs = graph.nodes.map(n => n.x), ys = graph.nodes.map(n => n.y);
+    const minX = Math.min.apply(null, xs) - pad, maxX = Math.max.apply(null, xs) + pad;
+    const minY = Math.min.apply(null, ys) - pad, maxY = Math.max.apply(null, ys) + pad;
+    const width = Math.max(360, Math.ceil(maxX - minX));
+    const height = Math.max(280, Math.ceil(maxY - minY));
+    const clone = svg.cloneNode(true);
+    const ns = 'http://www.w3.org/2000/svg';
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const bg = dark ? '#1b1d24' : '#f5f6f9';
+    const style = document.createElementNS(ns, 'style');
+    style.textContent = '.edge .edge-line{fill:none;stroke:#718096;stroke-width:1.8px}.edge-mutual .edge-line{stroke:#0f766e}.edge-two .edge-line{stroke:#4f46e5}.edge text{font-size:11px;fill:' + (dark ? '#d6dae5' : '#4a5568') + ';text-anchor:middle;stroke:' + bg + ';stroke-width:5px;paint-order:stroke}.node-name{fill:#fff;font-size:12px;font-weight:600;text-anchor:middle}.node-role{fill:#fff;font-size:10px;text-anchor:middle}';
+    const background = document.createElementNS(ns, 'rect');
+    background.setAttribute('x', minX); background.setAttribute('y', minY);
+    background.setAttribute('width', width); background.setAttribute('height', height);
+    background.setAttribute('rx', '16'); background.setAttribute('fill', bg);
+    clone.insertBefore(background, clone.firstChild);
+    clone.insertBefore(style, clone.firstChild);
+    clone.setAttribute('xmlns', ns);
+    clone.setAttribute('viewBox', minX + ' ' + minY + ' ' + width + ' ' + height);
+    clone.setAttribute('width', width);
+    clone.setAttribute('height', height);
+    const graphGroup = clone.querySelector('#graph-g');
+    if (graphGroup) graphGroup.removeAttribute('transform');
+    return { svg: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone), width, height };
+  }
+
+  function downloadGraphBlob(filename, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 700);
+  }
+
+  function graphExportBaseName() {
+    return Ex.sanitizeFilename((App.data.work && App.data.work.title) || '作品') + '-人物关系图';
+  }
+
+  function exportGraphSvg() {
+    const data = graphExportData();
+    if (!data) { UI.toast('请先添加人物到关系图', 'warn'); return; }
+    downloadGraphBlob(graphExportBaseName() + '.svg', new Blob([data.svg], { type: 'image/svg+xml;charset=utf-8' }));
+    UI.toast('已导出 SVG 关系图');
+  }
+
+  function exportGraphPng() {
+    const data = graphExportData();
+    if (!data) { UI.toast('请先添加人物到关系图', 'warn'); return; }
+    const svgUrl = URL.createObjectURL(new Blob([data.svg], { type: 'image/svg+xml;charset=utf-8' }));
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(3, Math.max(2, 1600 / Math.max(data.width, data.height)));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(data.width * scale); canvas.height = Math.round(data.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(svgUrl);
+      canvas.toBlob(blob => {
+        if (!blob) { UI.toast('导出图片失败，请改用 SVG', 'err'); return; }
+        downloadGraphBlob(graphExportBaseName() + '.png', blob);
+        UI.toast('已导出 PNG 关系图');
+      }, 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(svgUrl); UI.toast('导出图片失败，请改用 SVG', 'err'); };
+    img.src = svgUrl;
+  }
+
   Views.world.renderGraph = function (el) {
     const chars = App.data.characters;
     el.innerHTML =
       '<div class="btn-row" style="margin-bottom:10px;flex-wrap:wrap">' +
-      '<button class="btn small primary" data-action="graphAddChar">＋ 添加人物</button>' +
+      '<button class="btn small primary" data-action="graphBatchAddChars">＋ 批量添加人物</button>' +
       '<button class="btn small" data-action="graphAddEdge">＋ 添加关系</button>' +
       '<button class="btn small" data-action="graphAutoLayout">◎ 自动布局</button>' +
+      '<button class="btn small" data-action="graphExportPng">⇩ 导出 PNG</button>' +
+      '<button class="btn small" data-action="graphExportSvg">⇩ SVG</button>' +
+      '<span class="graph-legend"><b>方向：</b><i>→</i> 单向 <i>←</i> 反向 <i>⇋</i> 双向</span>' +
       '<span class="hint">拖拽节点移动 · 滚轮缩放 · 空白拖拽平移 · 双击空白添加人物 · 点击节点/连线编辑</span>' +
       '</div>' +
       '<div class="graph-wrap" id="graph-wrap">' +
       '<svg id="relation-svg" width="100%" height="100%">' +
-      '<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#8b93a5"/></marker></defs>' +
+      '<defs>' +
+      '<marker id="arrow-end" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#718096"/></marker>' +
+      '<marker id="arrow-start" markerWidth="10" markerHeight="10" refX="0" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M8,0 L0,4 L8,8 z" fill="#718096"/></marker>' +
+      '</defs>' +
       '<g id="graph-g"><g id="graph-edges"></g><g id="graph-nodes"></g></g>' +
       '</svg>' +
       (chars.length ? '' : '<div class="graph-empty-hint">还没有人物，先去「设定」页创建角色，再回到这里搭建关系网</div>') +
@@ -177,28 +256,45 @@
     App.data.characters.forEach(c => { cmap[c.id] = c; });
     const edgesEl = U.$('#graph-edges');
     const nodesEl = U.$('#graph-nodes');
+    const edgeGeometry = (a, b, bend) => {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const pad = Math.min(30, Math.max(16, len * 0.18));
+      const start = { x: a.x + dx / len * pad, y: a.y + dy / len * pad };
+      const end = { x: b.x - dx / len * pad, y: b.y - dy / len * pad };
+      const control = { x: (start.x + end.x) / 2 - dy / len * bend, y: (start.y + end.y) / 2 + dx / len * bend };
+      const point = t => {
+        const q = 1 - t;
+        return { x: Math.round(q * q * start.x + 2 * q * t * control.x + t * t * end.x), y: Math.round(q * q * start.y + 2 * q * t * control.y + t * t * end.y) };
+      };
+      return { d: 'M ' + start.x + ' ' + start.y + ' Q ' + control.x + ' ' + control.y + ' ' + end.x + ' ' + end.y, point };
+    };
+    const textAt = (cls, p, text) => '<text class="' + cls + '" x="' + p.x + '" y="' + (p.y - 7) + '">' + U.escapeHtml(text) + '</text>';
     edgesEl.innerHTML = graph.edges.map(e => {
       const a = Graph.nodePos(graph, e.from), b = Graph.nodePos(graph, e.to);
       if (!a || !b) return '';
       const kind = e.kind || 'one';
       const label = e.label || '';
       const labelBA = e.labelBA || '';
-      const twoWay = kind === 'mutual' || kind === 'two';
-      const markerStart = twoWay ? ' marker-start="url(#arrow)"' : '';
-      const markerEnd = ' marker-end="url(#arrow)"';
-      const at = t => ({ x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t) });
-      const mid = at(0.5);
+      const straight = edgeGeometry(a, b, 0);
+      const forward = edgeGeometry(a, b, -16);
+      const backward = edgeGeometry(b, a, -16);
+      let lineHtml = '';
       let labelHtml = '';
-      if (kind === 'two') {
-        if (label) labelHtml += '<text class="edge-label-b" x="' + at(0.74).x + '" y="' + (at(0.74).y - 6) + '">' + U.escapeHtml(label) + '</text>';
-        if (labelBA) labelHtml += '<text class="edge-label-a" x="' + at(0.26).x + '" y="' + (at(0.26).y - 6) + '">' + U.escapeHtml(labelBA) + '</text>';
-      } else if (label) {
-        labelHtml = '<text x="' + mid.x + '" y="' + (mid.y - 8) + '">' + U.escapeHtml(label) + '</text>';
+      if (kind === 'one') {
+        lineHtml = '<path class="edge-line edge-one" d="' + straight.d + '" marker-end="url(#arrow-end)"/>';
+        if (label) labelHtml = textAt('edge-label', straight.point(0.5), label);
+      } else {
+        lineHtml = '<path class="edge-line edge-forward" d="' + forward.d + '" marker-end="url(#arrow-end)"/>' +
+          '<path class="edge-line edge-backward" d="' + backward.d + '" marker-end="url(#arrow-end)"/>';
+        if (kind === 'two') {
+          if (label) labelHtml += textAt('edge-label-b', forward.point(0.63), label);
+          if (labelBA) labelHtml += textAt('edge-label-a', backward.point(0.63), labelBA);
+        } else if (label) {
+          labelHtml = textAt('edge-label', forward.point(0.5), label);
+        }
       }
-      return '<g class="edge" data-edge="' + e.id + '">' +
-        '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '"' + markerStart + markerEnd + '/>' +
-        labelHtml +
-        '</g>';
+      return '<g class="edge edge-' + kind + '" data-edge="' + e.id + '">' + lineHtml + labelHtml + '</g>';
     }).join('');
     nodesEl.innerHTML = graph.nodes.map(n => {
       const c = cmap[n.charId];
@@ -327,23 +423,42 @@
       '</div>');
   }
 
+  function graphCenter() {
+    const wrap = graphWrap();
+    return toGraph({ x: (wrap ? wrap.clientWidth : 800) / 2, y: (wrap ? wrap.clientHeight : 500) / 2 });
+  }
+
+  function addCharactersToGraph(charIds) {
+    const ids = (charIds || []).filter(Boolean);
+    if (!ids.length) return 0;
+    const graph = App.getGraph();
+    const center = graphCenter();
+    const radius = Math.max(72, Math.min(180, 42 + ids.length * 22));
+    ids.forEach((id, index) => {
+      const angle = -Math.PI / 2 + index / ids.length * Math.PI * 2;
+      Graph.addNode(graph, id, Math.round(center.x + Math.cos(angle) * radius), Math.round(center.y + Math.sin(angle) * radius));
+    });
+    return ids.length;
+  }
+
   function openAddCharModal() {
     const graph = App.getGraph();
     const inGraph = new Set(graph.nodes.map(n => n.charId));
     const avail = App.data.characters.filter(c => !inGraph.has(c.id));
     if (!avail.length) {
-      UI.openModal('<h3 style="margin:0 0 4px">添加人物</h3>' +
-        '<p class="hint">所有人物都已加入图中，或还没有人物。请先到「人物」页创建角色。</p>' +
+      UI.openModal('<h3 style="margin:0 0 4px">批量添加人物</h3>' +
+        '<p class="hint">所有人物都已加入关系图，或还没有人物。可点击页面顶部「新建人物设定」创建角色。</p>' +
         '<div class="btn-row" style="justify-content:flex-end"><button class="btn" data-action="modal-close">知道了</button></div>');
       return;
     }
-    UI.openModal('<h3 style="margin:0 0 4px">添加人物到关系图</h3>' +
-      '<select class="select" id="graph-char-select">' + avail.map(c =>
-        '<option value="' + c.id + '">' + U.escapeHtml(c.name || '未命名') + (c.role ? '（' + U.escapeHtml(c.role) + '）' : '') + '</option>'
-      ).join('') + '</select>' +
+    UI.openModal('<h3 style="margin:0 0 4px">批量添加人物到关系图</h3>' +
+      '<p class="hint" style="margin-top:0">勾选一个或多个尚未加入关系图的人物。</p>' +
+      '<div class="graph-char-picker">' + avail.map(c =>
+        '<label class="graph-char-option"><input type="checkbox" name="graph-char" value="' + c.id + '"><span class="graph-char-dot" style="background:' + colorOf(c.name || c.id) + '"></span><span>' + U.escapeHtml(c.name || '未命名') + '</span>' + (c.role ? '<em>' + U.escapeHtml(c.role) + '</em>' : '') + '</label>'
+      ).join('') + '</div>' +
       '<div class="modal-foot" style="padding:16px 0 0;justify-content:flex-end">' +
       '<button class="btn" data-action="modal-close">取消</button>' +
-      '<button class="btn primary" data-action="graphAddCharConfirm">添加到图</button></div>');
+      '<button class="btn primary" data-action="graphAddCharConfirm">加入关系图</button></div>');
   }
 
   function openAddEdgeModal(edge) {
@@ -404,16 +519,20 @@
   };
 
   /* ---------- 关系图 Actions ---------- */
-  Actions['graphAddChar'] = () => openAddCharModal();
+  Actions['graphBatchAddChars'] = () => openAddCharModal();
+  Actions['graphNewCharSetting'] = () => {
+    App.state.graphAddNewCharacter = true;
+    UI.openModal(charFormHtml());
+  };
+  Actions['graphExportPng'] = () => exportGraphPng();
+  Actions['graphExportSvg'] = () => exportGraphSvg();
   Actions['graphAddCharConfirm'] = async () => {
-    const sel = U.$('#graph-char-select');
-    if (!sel || !sel.value) return;
-    const wrap = graphWrap();
-    const center = toGraph({ x: (wrap ? wrap.clientWidth : 800) / 2, y: (wrap ? wrap.clientHeight : 500) / 2 });
-    Graph.addNode(App.getGraph(), sel.value, Math.round(center.x), Math.round(center.y));
+    const ids = U.$$('#modal-root input[name="graph-char"]:checked').map(input => input.value);
+    if (!ids.length) { UI.toast('请至少选择一位人物', 'warn'); return; }
+    const count = addCharactersToGraph(ids);
     await App.graphSave();
     UI.closeModal();
-    UI.toast('已添加到关系图');
+    UI.toast('已添加 ' + count + ' 位人物到关系图');
     Views.world.renderGraph(U.$('#world-body'));
   };
   Actions['graphAddEdge'] = () => openAddEdgeModal(null);
@@ -463,11 +582,13 @@
   };
   Actions['graphAutoLayout'] = async () => {
     const graph = App.getGraph();
-    Graph.circularLayout(graph, 0, 0, 80 + graph.nodes.length * 26);
+    if (!graph.nodes.length) { UI.toast('请先添加人物', 'warn'); return; }
+    Graph.autoLayout(graph, { idealDistance: 145, iterations: 200, componentGap: 230 });
     await App.graphSave();
+    gZoom = 1;
     fitGraphView();
     renderGraphSVG();
-    UI.toast('已自动布局');
+    UI.toast('已自动排列：已优先缩短连线并降低交叉');
   };
 
   Actions['worldSeg'] = t => {
@@ -520,6 +641,11 @@
       }, f);
       await DB.put('characters', c);
       App.data.characters.push(c);
+      if (App.state.graphAddNewCharacter) {
+        addCharactersToGraph([c.id]);
+        await App.graphSave();
+        App.state.graphAddNewCharacter = false;
+      }
     }
     UI.closeModal();
     UI.toast('已保存');

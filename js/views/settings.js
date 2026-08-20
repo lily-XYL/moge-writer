@@ -207,8 +207,13 @@
       try {
         data = JSON.parse(await U.fileToText(file));
       } catch (e) { UI.toast('文件解析失败：不是有效的 JSON', 'err'); return; }
+      if (!data || data.app !== 'moge-studio' || (data.version !== 1 && data.version !== 2)) {
+        UI.toast('文件不是受支持的墨阁备份', 'err'); return;
+      }
+      const workCount = Array.isArray(data.works) ? data.works.length : 0;
+      const chapterCount = Array.isArray(data.chapters) ? data.chapters.length : 0;
       UI.openModal('<h3 style="margin:0 0 4px">导入数据</h3>' +
-        '<p style="font-size:13px;color:var(--text-2)">文件包含：作品 ' + (data.works || []).length + ' 部、章节 ' + (data.chapters || []).length + ' 章等。</p>' +
+        '<p style="font-size:13px;color:var(--text-2)">文件包含：作品 ' + workCount + ' 部、章节 ' + chapterCount + ' 章等。</p>' +
         '<label style="display:flex;gap:10px;align-items:center;padding:6px 0"><input type="radio" name="importMode" value="merge" checked> 合并导入（不覆盖已有记录）</label>' +
         '<label style="display:flex;gap:10px;align-items:center;padding:6px 0"><input type="radio" name="importMode" value="replace"> 覆盖导入（清空后导入，谨慎！）</label>' +
         '<div class="modal-foot" style="padding:16px 0 0;justify-content:flex-end">' +
@@ -221,10 +226,16 @@
   Actions['doImport'] = async () => {
     const f = UI.readForm(U.$('#modal-root .modal'));
     const mode = f.importMode || 'merge';
-    const res = await Ex.restoreAll(App._importData, mode);
-    UI.closeModal();
-    UI.toast(mode === 'replace' ? '已覆盖导入 ' + res.total + ' 条记录' : '已合并导入（新增 ' + res.written + ' 条）');
-    setTimeout(() => location.reload(), 400);
+    try {
+      const res = await Ex.restoreAll(App._importData, mode);
+      UI.closeModal();
+      UI.toast(mode === 'replace'
+        ? '已覆盖导入 ' + res.written + ' 条记录'
+        : '已合并导入（新增 ' + res.written + ' 条，跳过 ' + res.skipped + ' 条）');
+      setTimeout(() => location.reload(), 400);
+    } catch (e) {
+      UI.toast('导入失败：' + (e && e.message ? e.message : '请检查备份文件'), 'err');
+    }
   };
 
   Actions['wipeAll'] = () => {

@@ -105,6 +105,19 @@ GraphData.circularLayout(g, 0, 0, 100);
 t('圆形布局', g.nodes[0].x === 0 && g.nodes[0].y === -100);
 t('nodePos 查找', GraphData.nodePos(g, 'b').charId === 'b');
 
+const layoutGraph = GraphData.createGraph('layout');
+['a', 'b', 'c', 'd', 'e'].forEach(id => GraphData.addNode(layoutGraph, id, 0, 0));
+GraphData.addEdge(layoutGraph, 'a', 'b', 'one', '');
+GraphData.addEdge(layoutGraph, 'b', 'c', 'one', '');
+GraphData.addEdge(layoutGraph, 'c', 'd', 'mutual', '');
+GraphData.addEdge(layoutGraph, 'd', 'e', 'two', '', '');
+GraphData.addEdge(layoutGraph, 'a', 'e', 'one', '');
+GraphData.autoLayout(layoutGraph, { idealDistance: 140, iterations: 120 });
+const lnodes = layoutGraph.nodes;
+t('自动布局生成有效坐标', lnodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y)));
+t('自动布局节点不重叠', lnodes.every((n, i) => lnodes.slice(i + 1).every(m => Math.hypot(n.x - m.x, n.y - m.y) > 35)));
+t('自动布局连线不过长', layoutGraph.edges.every(e => { const a = GraphData.nodePos(layoutGraph, e.from), b = GraphData.nodePos(layoutGraph, e.to); return Math.hypot(a.x - b.x, a.y - b.y) < 300; }));
+
 const g3 = GraphData.createGraph('w3');
 g3.edges.push({ id: 'e1', from: 'a', to: 'b', dir: 'both', label: '互为' });
 g3.edges.push({ id: 'e2', from: 'a', to: 'c', dir: 'a2b', label: '单向' });

@@ -147,20 +147,25 @@
     }
   }
 
-  /* ---------- 全局搜索 ---------- */
+  /* ---------- 全局搜索（全部作品 / 全书 / 卷 / 章节） ---------- */
   Actions['openSearch'] = async () => {
-    const [works, chapters, characters, entries, outlines, foreshadows, timeline, ideas] = await Promise.all([
-      DB.getAll('works'), DB.getAll('chapters'), DB.getAll('characters'), DB.getAll('entries'),
+    const [works, volumes, chapters, characters, entries, outlines, foreshadows, timeline, ideas] = await Promise.all([
+      DB.getAll('works'), DB.getAll('volumes'), DB.getAll('chapters'), DB.getAll('characters'), DB.getAll('entries'),
       DB.getAll('outlines'), DB.getAll('foreshadows'), DB.getAll('timeline'), DB.getAll('ideas')
     ]);
-    const wmap = {};
+    const wmap = {}, vmap = {};
     works.forEach(w => { wmap[w.id] = w; });
-    App._searchData = { works, chapters, characters, entries, outlines, foreshadows, timeline, ideas, wmap };
+    volumes.forEach(v => { vmap[v.id] = v; });
+    App._searchData = { works, volumes, chapters, characters, entries, outlines, foreshadows, timeline, ideas, wmap, vmap };
+    const currentWork = App.state.workId && wmap[App.state.workId] ? App.state.workId : (works[0] || {}).id || '';
+    App.state.searchScope = { mode: 'global', workId: currentWork, volumeId: '', chapterId: '' };
     UI.openModal(
       '<h3 style="margin:0 0 10px">全局搜索</h3>' +
       '<input class="input" id="search-input" placeholder="搜索章节、人物、设定、伏笔、灵感…" autocomplete="off">' +
-      '<div id="search-results" style="margin-top:10px;max-height:58vh;overflow:auto"></div>'
+      '<div id="search-scope-controls"></div>' +
+      '<div id="search-results" style="margin-top:10px;max-height:52vh;overflow:auto"></div>'
     );
+    renderSearchScopeControls();
     const input = U.$('#search-input');
     input.addEventListener('input', U.debounce(() => runSearch(input.value), 200));
     setTimeout(() => input.focus(), 30);
@@ -175,75 +180,182 @@
     return (s > 0 ? '…' : '') + text.slice(s, s + len).replace(/\s+/g, ' ') + '…';
   }
 
+  function rerunSearch() {
+    const input = U.$('#search-input');
+    if (input && input.value.trim()) runSearch(input.value);
+  }
+  function searchVolumes(workId) {
+    return App._searchData.volumes.filter(v => v.workId === workId).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  }
+  function searchChapters(workId, volumeId) {
+    return App._searchData.chapters.filter(c => c.workId === workId && (!volumeId || (volumeId === '__orphan__' ? !c.volumeId : c.volumeId === volumeId)))
+      .sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  }
+  function normalizeSearchScope() {
+    const D = App._searchData, s = App.state.searchScope;
+    if (!D.wmap[s.workId]) s.workId = (D.works[0] || {}).id || '';
+    const vols = searchVolumes(s.workId);
+    const candidates = vols.map(v => v.id);
+    if (D.chapters.some(c => c.workId === s.workId && !c.volumeId)) candidates.push('__orphan__');
+    if ((s.mode === 'volume' || s.mode === 'chapter') && candidates.indexOf(s.volumeId) === -1) s.volumeId = candidates[0] || '';
+    const chs = searchChapters(s.workId, s.volumeId);
+    if (s.mode === 'chapter' && !chs.some(c => c.id === s.chapterId)) s.chapterId = (chs[0] || {}).id || '';
+  }
+  function renderSearchScopeControls() {
+    const host = U.$('#search-scope-controls');
+    if (!host) return;
+    const D = App._searchData, s = App.state.searchScope;
+    normalizeSearchScope();
+    const chips = [
+      { id: 'global', label: '全部作品' }, { id: 'book', label: '全书' },
+      { id: 'volume', label: '卷' }, { id: 'chapter', label: '章节' }
+    ].map(item => '<span class="chip' + (s.mode === item.id ? ' active' : '') + '" data-action="searchScopeMode" data-id="' + item.id + '">' + item.label + '</span>').join('');
+    const workSelect = '<select class="select search-scope-select" data-action="searchScopeWork">' + D.works.map(w => '<option value="' + w.id + '"' + (w.id === s.workId ? ' selected' : '') + '>' + U.escapeHtml(w.title || '未命名作品') + '</option>').join('') + '</select>';
+    const volumes = searchVolumes(s.workId);
+    const volumeRows = volumes.map(v => ({ id: v.id, title: v.title || '未命名卷' }));
+    if (D.chapters.some(c => c.workId === s.workId && !c.volumeId)) volumeRows.push({ id: '__orphan__', title: '未分卷' });
+    const volumeSelect = '<select class="select search-scope-select" data-action="searchScopeVolume">' + volumeRows.map(v => '<option value="' + v.id + '"' + (v.id === s.volumeId ? ' selected' : '') + '>' + U.escapeHtml(v.title) + '</option>').join('') + '</select>';
+    const chapters = searchChapters(s.workId, s.volumeId);
+    const chapterSelect = '<select class="select search-scope-select" data-action="searchScopeChapter">' + chapters.map(c => '<option value="' + c.id + '"' + (c.id === s.chapterId ? ' selected' : '') + '>' + U.escapeHtml(c.title || '无题') + '</option>').join('') + '</select>';
+    let selectors = '';
+    if (s.mode === 'book') selectors = workSelect;
+    if (s.mode === 'volume') selectors = workSelect + volumeSelect;
+    if (s.mode === 'chapter') selectors = workSelect + volumeSelect + chapterSelect;
+    const defaultFind = (U.$('#search-input') || {}).value || '';
+    const replacePanel = '<div class="search-replace-panel">' +
+      '<div class="search-replace-title">批量替换正文</div>' +
+      '<input class="input" id="search-replace-from" value="' + U.escapeHtml(defaultFind) + '" placeholder="查找内容（区分大小写）">' +
+      '<input class="input" id="search-replace-to" placeholder="替换为（留空即删除）">' +
+      '<button class="btn small danger" data-action="searchReplacePreview">在当前范围替换</button>' +
+      '</div>';
+    host.innerHTML = '<div class="search-scope-row"><span class="search-scope-label">范围</span><div class="search-scope-chips">' + chips + '</div></div>' +
+      (selectors ? '<div class="search-scope-selects">' + selectors + '</div>' : '') + replacePanel;
+  }
+  Actions['searchScopeMode'] = t => {
+    App.state.searchScope.mode = t.dataset.id;
+    renderSearchScopeControls(); rerunSearch();
+  };
+  Actions['searchScopeWork'] = t => {
+    App.state.searchScope.workId = t.value;
+    App.state.searchScope.volumeId = ''; App.state.searchScope.chapterId = '';
+    renderSearchScopeControls(); rerunSearch();
+  };
+  Actions['searchScopeVolume'] = t => {
+    App.state.searchScope.volumeId = t.value;
+    App.state.searchScope.chapterId = '';
+    renderSearchScopeControls(); rerunSearch();
+  };
+  Actions['searchScopeChapter'] = t => { App.state.searchScope.chapterId = t.value; rerunSearch(); };
+
+  function replacementScopeLabel() {
+    const D = App._searchData, s = App.state.searchScope;
+    if (s.mode === 'global') return '全部作品';
+    const work = (D.wmap[s.workId] || {}).title || '当前作品';
+    if (s.mode === 'book') return '《' + work + '》全书';
+    const volume = s.volumeId === '__orphan__' ? '未分卷' : ((D.vmap[s.volumeId] || {}).title || '当前卷');
+    if (s.mode === 'volume') return '《' + work + '》/' + volume;
+    const chapter = (D.chapters.find(c => c.id === s.chapterId) || {}).title || '当前章节';
+    return '《' + work + '》/' + volume + '/' + chapter;
+  }
+  function countOccurrences(text, needle) {
+    if (!needle) return 0;
+    let count = 0, at = 0;
+    while ((at = text.indexOf(needle, at)) !== -1) { count++; at += needle.length; }
+    return count;
+  }
+  Actions['searchReplacePreview'] = () => {
+    const findEl = U.$('#search-replace-from');
+    const toEl = U.$('#search-replace-to');
+    const find = findEl ? findEl.value : '';
+    const replacement = toEl ? toEl.value : '';
+    if (!find) { UI.toast('请填写要查找的内容', 'warn'); return; }
+    if (find === replacement) { UI.toast('查找内容与替换内容相同', 'warn'); return; }
+    const chapters = App._searchData.chapters.filter(chapterMatchesScope).filter(c => (c.content || '').includes(find));
+    const occurrences = chapters.reduce((sum, c) => sum + countOccurrences(c.content || '', find), 0);
+    if (!occurrences) { UI.toast('当前范围内没有可替换的正文内容', 'warn'); return; }
+    const plan = { find, replacement, chapters, occurrences };
+    UI.confirmDialog('确认批量替换', '将在“' + replacementScopeLabel() + '”中替换 ' + chapters.length + ' 章、共 ' + occurrences + ' 处正文内容。此操作会立即保存。', async () => {
+      const now = Date.now();
+      const changed = plan.chapters.map(c => Object.assign({}, c, {
+        content: (c.content || '').split(plan.find).join(plan.replacement),
+        wordCount: U.countWords((c.content || '').split(plan.find).join(plan.replacement)),
+        updatedAt: now
+      }));
+      await DB.putMany('chapters', changed);
+      const changedById = new Map(changed.map(c => [c.id, c]));
+      if (App.data && App.data.chapters) {
+        App.data.chapters.forEach(c => { const updated = changedById.get(c.id); if (updated) Object.assign(c, updated); });
+      }
+      const workIds = Array.from(new Set(changed.map(c => c.workId)));
+      await Promise.all(workIds.map(async workId => {
+        const work = await DB.get('works', workId);
+        if (work) { work.updatedAt = now; await DB.put('works', work); }
+      }));
+      UI.toast('已替换 ' + plan.occurrences + ' 处内容');
+      setTimeout(() => location.reload(), 450);
+    }, '确认替换');
+  };
+
+  function chapterMatchesScope(chapter) {
+    const s = App.state.searchScope;
+    if (s.mode === 'global') return true;
+    if (chapter.workId !== s.workId) return false;
+    if (s.mode === 'book') return true;
+    const inVolume = s.volumeId === '__orphan__' ? !chapter.volumeId : chapter.volumeId === s.volumeId;
+    if (!inVolume) return false;
+    return s.mode !== 'chapter' || chapter.id === s.chapterId;
+  }
+  function ancillaryMatchesScope(item) {
+    const s = App.state.searchScope;
+    return s.mode === 'global' || (s.mode === 'book' && item.workId === s.workId);
+  }
+  function volumeCaption(chapter) {
+    const v = App._searchData.vmap[chapter.volumeId];
+    return v ? (v.title || '未命名卷') : '未分卷';
+  }
+
   function runSearch(q) {
     const box = U.$('#search-results');
     if (!box) return;
     q = (q || '').toLowerCase().trim();
     if (!q) { box.innerHTML = '<div class="empty">输入关键词开始搜索</div>'; return; }
-    const D = App._searchData;
+    const D = App._searchData, s = App.state.searchScope;
     let html = '';
     const push = (label, items) => {
       if (!items.length) return;
       html += '<div class="sr-group">' + label + '</div>';
-      html += items.slice(0, 8).map(it => it).join('');
+      html += items.slice(0, 12).join('');
     };
-    push('章节', D.chapters.filter(c =>
-      (c.title || '').toLowerCase().includes(q) || (c.content || '').toLowerCase().includes(q) || (c.outline || '').toLowerCase().includes(q)
-    ).slice(0, 12).map(c =>
+    const matchText = value => (value || '').toLowerCase().includes(q);
+    push('章节', D.chapters.filter(c => chapterMatchesScope(c) && (matchText(c.title) || matchText(c.content) || matchText(c.outline) || matchText(c.notes))).map(c =>
       '<div class="search-result" data-action="openSearchJump" data-to="#/e/' + c.workId + '/' + c.id + '">' +
-      '<div class="sr-title">📄 ' + U.escapeHtml(c.title || '无题') + '<span class="hint"> · ' + U.escapeHtml((D.wmap[c.workId] || {}).title || '') + '</span></div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(c.content, q)) + '</div></div>'
-    ).join(''));
-    push('作品', D.works.filter(w =>
-      (w.title || '').toLowerCase().includes(q) || (w.author || '').toLowerCase().includes(q) || (w.synopsis || '').toLowerCase().includes(q)
-    ).map(w =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + w.id + '/overview">' +
-      '<div class="sr-title">📚 ' + U.escapeHtml(w.title) + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(w.synopsis, q)) + '</div></div>'
-    ).join(''));
-    push('人物', D.characters.filter(c =>
-      (c.name || '').toLowerCase().includes(q) || (c.role || '').toLowerCase().includes(q) || (c.tags || '').toLowerCase().includes(q)
-    ).map(c =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + c.workId + '/world">' +
-      '<div class="sr-title">👤 ' + U.escapeHtml(c.name) + '<span class="hint"> · ' + U.escapeHtml(c.role || '') + '</span></div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(U.short(c.background || c.appearance || '', 60)) + '</div></div>'
-    ).join(''));
-    push('设定', D.entries.filter(e =>
-      (e.name || '').toLowerCase().includes(q) || (e.content || '').toLowerCase().includes(q)
-    ).map(e =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + e.workId + '/world">' +
-      '<div class="sr-title">🗺 ' + U.escapeHtml(e.name) + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(e.content, q)) + '</div></div>'
-    ).join(''));
-    push('大纲', D.outlines.filter(o =>
-      (o.title || '').toLowerCase().includes(q) || (o.content || '').toLowerCase().includes(q)
-    ).map(o =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + o.workId + '/outline">' +
-      '<div class="sr-title">📝 ' + U.escapeHtml(o.title) + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(o.content, q)) + '</div></div>'
-    ).join(''));
-    push('伏笔', D.foreshadows.filter(f =>
-      (f.content || '').toLowerCase().includes(q) || (f.setupAt || '').toLowerCase().includes(q) || (f.payoffAt || '').toLowerCase().includes(q)
-    ).map(f =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + f.workId + '/foreshadow">' +
-      '<div class="sr-title">🪝 ' + U.escapeHtml(U.short(f.content, 40)) + (f.status === 'paid' ? '<span class="badge paid">已回收</span>' : '<span class="badge open">未回收</span>') + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml('埋设：' + (f.setupAt || '—') + ' · 回收：' + (f.payoffAt || '—')) + '</div></div>'
-    ).join(''));
-    push('时间线', D.timeline.filter(t =>
-      (t.time || '').toLowerCase().includes(q) || (t.event || '').toLowerCase().includes(q)
-    ).map(t =>
-      '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + t.workId + '/timeline">' +
-      '<div class="sr-title">🕰 ' + U.escapeHtml(t.time) + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(t.event, q)) + '</div></div>'
-    ).join(''));
-    push('灵感', D.ideas.filter(i =>
-      (i.title || '').toLowerCase().includes(q) || (i.content || '').toLowerCase().includes(q) || (i.tags || '').toLowerCase().includes(q)
-    ).map(i =>
-      '<div class="search-result" data-action="openSearchJump" data-to="' + (i.workId ? '#/w/' + i.workId + '/ideas' : '#/ideas') + '">' +
-      '<div class="sr-title">💡 ' + U.escapeHtml(i.title || '灵感') + '</div>' +
-      '<div class="sr-snippet">' + U.escapeHtml(snippet(i.content, q)) + '</div></div>'
-    ).join(''));
-    box.innerHTML = html || '<div class="empty">没有找到「' + U.escapeHtml(q) + '」相关内容</div>';
+      '<div class="sr-title">📄 ' + U.escapeHtml(c.title || '无题') + '<span class="hint"> · ' + U.escapeHtml((D.wmap[c.workId] || {}).title || '') + ' / ' + U.escapeHtml(volumeCaption(c)) + '</span></div>' +
+      '<div class="sr-snippet">' + U.escapeHtml(snippet(c.content || c.outline || c.notes, q)) + '</div></div>'
+    ));
+    if (s.mode === 'global' || s.mode === 'book') {
+      push('作品', D.works.filter(w => (s.mode === 'global' || w.id === s.workId) && (matchText(w.title) || matchText(w.author) || matchText(w.synopsis))).map(w =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + w.id + '/overview"><div class="sr-title">📚 ' + U.escapeHtml(w.title) + '</div><div class="sr-snippet">' + U.escapeHtml(snippet(w.synopsis, q)) + '</div></div>'
+      ));
+      push('人物', D.characters.filter(c => ancillaryMatchesScope(c) && (matchText(c.name) || matchText(c.role) || matchText(c.tags))).map(c =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + c.workId + '/world"><div class="sr-title">👤 ' + U.escapeHtml(c.name) + '<span class="hint"> · ' + U.escapeHtml(c.role || '') + '</span></div><div class="sr-snippet">' + U.escapeHtml(U.short(c.background || c.appearance || '', 60)) + '</div></div>'
+      ));
+      push('设定', D.entries.filter(e => ancillaryMatchesScope(e) && (matchText(e.name) || matchText(e.content))).map(e =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + e.workId + '/world"><div class="sr-title">🗺 ' + U.escapeHtml(e.name) + '</div><div class="sr-snippet">' + U.escapeHtml(snippet(e.content, q)) + '</div></div>'
+      ));
+      push('大纲', D.outlines.filter(o => ancillaryMatchesScope(o) && (matchText(o.title) || matchText(o.content))).map(o =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + o.workId + '/outline"><div class="sr-title">📝 ' + U.escapeHtml(o.title) + '</div><div class="sr-snippet">' + U.escapeHtml(snippet(o.content, q)) + '</div></div>'
+      ));
+      push('伏笔', D.foreshadows.filter(f => ancillaryMatchesScope(f) && (matchText(f.content) || matchText(f.setupAt) || matchText(f.payoffAt))).map(f =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + f.workId + '/foreshadow"><div class="sr-title">🪝 ' + U.escapeHtml(U.short(f.content, 40)) + '</div><div class="sr-snippet">' + U.escapeHtml('埋设：' + (f.setupAt || '—') + ' · 回收：' + (f.payoffAt || '—')) + '</div></div>'
+      ));
+      push('时间线', D.timeline.filter(t => ancillaryMatchesScope(t) && (matchText(t.time) || matchText(t.event))).map(t =>
+        '<div class="search-result" data-action="openSearchJump" data-to="#/w/' + t.workId + '/timeline"><div class="sr-title">🕰 ' + U.escapeHtml(t.time) + '</div><div class="sr-snippet">' + U.escapeHtml(snippet(t.event, q)) + '</div></div>'
+      ));
+      push('灵感', D.ideas.filter(i => ancillaryMatchesScope(i) && (matchText(i.title) || matchText(i.content) || matchText(i.tags))).map(i =>
+        '<div class="search-result" data-action="openSearchJump" data-to="' + (i.workId ? '#/w/' + i.workId + '/ideas' : '#/ideas') + '"><div class="sr-title">💡 ' + U.escapeHtml(i.title || '灵感') + '</div><div class="sr-snippet">' + U.escapeHtml(snippet(i.content, q)) + '</div></div>'
+      ));
+    }
+    box.innerHTML = html || '<div class="empty">在当前范围内没有找到「' + U.escapeHtml(q) + '」相关内容</div>';
   }
   Actions['openSearchJump'] = t => {
     UI.closeModal();

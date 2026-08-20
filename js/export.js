@@ -427,29 +427,67 @@ window.Export = (() => {
   function dumpAll() {
     const stores = DB.STORES.filter(s => s !== 'backups');
     return Promise.all(stores.map(s => DB.getAll(s))).then(arrs => {
-      const data = { app: 'moge-studio', version: 1, exportedAt: new Date().toISOString() };
+      const data = { app: 'moge-studio', version: 2, scope: 'all', exportedAt: new Date().toISOString() };
       stores.forEach((s, i) => { data[s] = arrs[i]; });
       return data;
     });
   }
 
-  /* 导入：mode = 'replace'（覆盖） | 'merge'（合并，冲突跳过） */
+  const STORE_KEYS = { settings: 'key' };
+  function primaryKey(store, record) {
+    return record && record[STORE_KEYS[store] || 'id'];
+  }
+  function validateBackup(data, stores, mode) {
+    if (!data || typeof data !== 'object' || data.app !== 'moge-studio') {
+      throw new Error('该文件不是墨阁写作工坊备份');
+    }
+    if (data.version !== 1 && data.version !== 2) {
+      throw new Error('不支持的备份版本');
+    }
+    const records = {};
+    stores.forEach(store => {
+      const hasStore = Object.prototype.hasOwnProperty.call(data, store);
+      if (!hasStore) {
+        if (mode === 'replace') throw new Error('覆盖导入需要完整备份，缺少 ' + store + ' 数据');
+        return;
+      }
+      const arr = data[store];
+      if (!Array.isArray(arr)) throw new Error(store + ' 数据格式无效');
+      arr.forEach((record, index) => {
+        const key = primaryKey(store, record);
+        if (!record || typeof record !== 'object' || key == null || key === '') {
+          throw new Error(store + ' 第 ' + (index + 1) + ' 条记录缺少主键');
+        }
+      });
+      records[store] = arr;
+    });
+    return records;
+  }
+
+  /* 导入：mode = 'replace'（完整覆盖） | 'merge'（合并，冲突跳过）。 */
   function restoreAll(data, mode) {
     const stores = DB.STORES.filter(s => s !== 'backups');
-    const tasks = [];
+    mode = mode === 'replace' ? 'replace' : 'merge';
+    let records;
+    try { records = validateBackup(data, stores, mode); } catch (e) { return Promise.reject(e); }
+    const total = Object.values(records).reduce((sum, arr) => sum + arr.length, 0);
+
     if (mode === 'replace') {
-      stores.forEach(s => tasks.push(DB.clearStore(s)));
+      return DB.applyBatch(records, stores).then(written => ({ total, written, skipped: 0 }));
     }
-    return Promise.all(tasks).then(() => {
-      const puts = stores.map(s => {
-        const arr = (data && data[s]) || [];
-        if (mode === 'replace') return DB.putMany(s, arr);
-        return Promise.all(arr.map(o => DB.get(s, o.id).then(ex => ex ? null : DB.put(s, o)))).then(() => arr.length);
+
+    const checks = Object.entries(records).flatMap(([store, arr]) =>
+      arr.map(record => DB.get(store, primaryKey(store, record)).then(exists => ({ store, record, exists: !!exists })))
+    );
+    return Promise.all(checks).then(outcomes => {
+      const writes = {};
+      let skipped = 0;
+      outcomes.forEach(item => {
+        if (item.exists) { skipped++; return; }
+        if (!writes[item.store]) writes[item.store] = [];
+        writes[item.store].push(item.record);
       });
-      return Promise.all(puts).then(results => {
-        const total = stores.reduce((sum, s, i) => sum + (data[s] ? data[s].length : 0), 0);
-        return { total, written: results.reduce((a, b) => a + b, 0) };
-      });
+      return DB.applyBatch(writes).then(written => ({ total, written, skipped }));
     });
   }
 
