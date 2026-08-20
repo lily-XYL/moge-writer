@@ -65,17 +65,24 @@
         '</div>' +
 
         '<div>' +
+        '<div class="card"><div class="card-title">自动备份</div>' +
+        '<div class="hint" style="margin-bottom:10px">写作期间按间隔创建定时快照；关闭前若距上次保护备份超过 10 分钟且内容有变动，会创建退出前备份。每日备份固定保留最近 7 份。</div>' +
+        '<label class="label">定时快照间隔（分钟）</label>' +
+        '<input class="input" type="number" min="5" max="240" step="5" data-action="saveSetting" data-key="backupIntervalMinutes" value="' + (s.backupIntervalMinutes || 30) + '">' +
+        '<label class="label" style="margin-top:10px">定时 / 退出 / 操作前备份保留（份）</label>' +
+        '<input class="input" type="number" min="5" max="100" step="1" data-action="saveSetting" data-key="backupKeepCount" value="' + (s.backupKeepCount || 30) + '">' +
+        '</div>' +
         '<div class="card"><div class="card-title">数据备份</div>' +
-        '<div class="hint" style="margin-bottom:10px">数据保存在本机浏览器中。每天首次打开会自动备份一次（保留最近 15 份），建议重要时刻手动备份并定期导出。</div>' +
+        '<div class="hint" style="margin-bottom:10px">自动快照存于本机数据库；导入覆盖、恢复备份与批量替换前会先创建“操作前备份”。重要版本仍建议定期导出 JSON 文件到其他磁盘或云盘。</div>' +
         '<div class="btn-row" style="margin-bottom:14px">' +
         '<button class="btn primary" data-action="backupNow">立即备份</button>' +
         '<button class="btn" data-action="exportAllData">导出全部数据(JSON)</button>' +
         '<button class="btn" data-action="importData">导入数据</button>' +
         '</div>' +
         (backups.length ?
-          '<table class="table"><thead><tr><th>备份</th><th>时间</th><th style="width:150px">操作</th></tr></thead><tbody>' +
+          '<table class="table"><thead><tr><th>备份</th><th>类型</th><th>时间</th><th style="width:150px">操作</th></tr></thead><tbody>' +
           backups.map(b =>
-            '<tr><td>' + U.escapeHtml(b.label || '备份') + '</td><td>' + U.fmtDate(b.createdAt) + '</td>' +
+            '<tr><td>' + U.escapeHtml(b.label || '备份') + '</td><td>' + U.escapeHtml(backupKindLabel(b.kind, b.label)) + '</td><td>' + U.fmtDate(b.createdAt) + '</td>' +
             '<td><div class="btn-row"><button class="btn small" data-action="restoreBackup" data-id="' + b.id + '">恢复</button>' +
             '<button class="btn small danger" data-action="delBackup" data-id="' + b.id + '">删除</button></div></td></tr>'
           ).join('') + '</tbody></table>'
@@ -103,6 +110,10 @@
     return { works: '作品', volumes: '卷', chapters: '章节', characters: '人物', entries: '设定', outlines: '大纲',
       foreshadows: '伏笔', timeline: '时间线', ideas: '灵感', dailyStats: '写作记录', settings: '设置' }[n] || n;
   }
+  function backupKindLabel(kind, label) {
+    if (!kind && /^自动备份\s/.test(label || '')) kind = 'daily';
+    return { daily: '每日', timed: '定时', exit: '退出前', safety: '操作前', manual: '手动' }[kind] || '手动';
+  }
 
   /* ---------- 设置保存 ---------- */
   Actions['saveSetting'] = async t => {
@@ -112,6 +123,8 @@
     if (key === 'lineHeight') val = parseFloat(val) || 2;
     if (key === 'autosave') val = Math.max(0.5, parseFloat(val) || 1) * 1000; /* 秒 → 毫秒 */
     if (key === 'defaultGoal') val = parseInt(val, 10) || 0;
+    if (key === 'backupIntervalMinutes') val = Math.max(5, Math.min(240, parseInt(val, 10) || 30));
+    if (key === 'backupKeepCount') val = Math.max(5, Math.min(100, parseInt(val, 10) || 30));
     if (key === 'sensitiveCustom') val = val.split('\n').map(x => x.trim()).filter(Boolean);
     if (key === 'typoCustom') val = val.split('\n').map(x => x.trim()).filter(Boolean).map(line => {
       const parts = line.split(/[,，]/);
@@ -165,16 +178,15 @@
 
   /* ---------- 备份 ---------- */
   Actions['backupNow'] = async () => {
-    const data = await Ex.dumpAll();
-    const rec = { id: U.uid(), label: '手动备份 ' + U.todayStr() + ' ' + new Date().toTimeString().slice(0, 5), createdAt: Date.now(), data: data };
-    await DB.put('backups', rec);
-    UI.toast('备份完成');
+    const result = await App.createBackup('manual', { force: true });
+    UI.toast(result && result.created ? '备份完成' : '当前内容与最近备份一致');
     Views.settings.render(U.$('#main'));
   };
   Actions['restoreBackup'] = t => {
     UI.confirmDialog('恢复备份', '将用该备份覆盖当前全部数据（作品/章节/设定等），无法撤销。确定恢复吗？', async () => {
       const b = await DB.get('backups', t.dataset.id);
       if (!b || !b.data) { UI.toast('备份数据无效', 'err'); return; }
+      await App.createBackup('safety', { force: true, detail: '恢复备份前' });
       await Ex.restoreAll(b.data, 'replace');
       UI.closeModal();
       UI.toast('已恢复，正在刷新…');
@@ -227,6 +239,7 @@
     const f = UI.readForm(U.$('#modal-root .modal'));
     const mode = f.importMode || 'merge';
     try {
+      await App.createBackup('safety', { force: true, detail: mode === 'replace' ? '覆盖导入前' : '合并导入前' });
       const res = await Ex.restoreAll(App._importData, mode);
       UI.closeModal();
       UI.toast(mode === 'replace'

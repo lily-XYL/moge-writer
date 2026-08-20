@@ -15,7 +15,11 @@
     typoCustom: [],
     lastWorkId: null,
     lastChapterId: null,
-    lastBackupDate: null
+    lastBackupDate: null,
+    lastAutoBackupAt: 0,
+    lastAutoBackupCheckAt: 0,
+    backupIntervalMinutes: 30,
+    backupKeepCount: 30
   };
 
   /* ---------- 主题与字体 ---------- */
@@ -274,7 +278,8 @@
     const occurrences = chapters.reduce((sum, c) => sum + countOccurrences(c.content || '', find), 0);
     if (!occurrences) { UI.toast('当前范围内没有可替换的正文内容', 'warn'); return; }
     const plan = { find, replacement, chapters, occurrences };
-    UI.confirmDialog('确认批量替换', '将在“' + replacementScopeLabel() + '”中替换 ' + chapters.length + ' 章、共 ' + occurrences + ' 处正文内容。此操作会立即保存。', async () => {
+    UI.confirmDialog('确认批量替换', '将在“' + replacementScopeLabel() + '”中替换 ' + chapters.length + ' 章、共 ' + occurrences + ' 处正文内容。替换前会自动创建保护备份。', async () => {
+      await App.createBackup('safety', { force: true, detail: '批量替换前' });
       const now = Date.now();
       const changed = plan.chapters.map(c => Object.assign({}, c, {
         content: (c.content || '').split(plan.find).join(plan.replacement),
@@ -362,20 +367,100 @@
     location.hash = t.dataset.to;
   };
 
-  /* ---------- 自动备份（每天首次打开备份一次） ---------- */
+  /* ---------- 自动备份（定时快照 / 退出保护 / 关键操作保护） ---------- */
+  const DAILY_BACKUP_KEEP_COUNT = 7;
+  let backupTimer = null;
+  let backupInFlight = null;
+
+  function backupKind(record) {
+    if (record && record.kind) return record.kind;
+    /* 兼容旧版“自动备份 YYYY-MM-DD”记录，将其按每日备份处理。 */
+    return /^自动备份\s/.test((record && record.label) || '') ? 'daily' : 'manual';
+  }
+  function backupLabel(kind, detail, at) {
+    const time = new Date(at || Date.now()).toTimeString().slice(0, 5);
+    const prefix = {
+      daily: '每日自动备份', timed: '定时快照', exit: '退出前备份',
+      safety: '操作前备份', manual: '手动备份'
+    }[kind] || '备份';
+    return prefix + (detail ? '：' + detail : '') + ' ' + U.todayStr() + ' ' + time;
+  }
+  function backupFingerprint(data) {
+    const normalized = {};
+    Object.keys(data || {}).filter(key => key !== 'exportedAt').sort().forEach(key => {
+      if (key === 'settings') {
+        normalized[key] = (data[key] || []).filter(row => row && ['lastBackupDate', 'lastAutoBackupAt', 'lastAutoBackupCheckAt'].indexOf(row.key) === -1);
+      } else normalized[key] = data[key];
+    });
+    return JSON.stringify(normalized);
+  }
+  async function pruneBackups() {
+    const all = (await DB.getAll('backups')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const keepCount = Math.max(5, Math.min(100, Number(App.settings.backupKeepCount) || 30));
+    const daily = all.filter(b => backupKind(b) === 'daily');
+    const rolling = all.filter(b => ['timed', 'exit', 'safety'].indexOf(backupKind(b)) !== -1);
+    const stale = daily.slice(DAILY_BACKUP_KEEP_COUNT).concat(rolling.slice(keepCount));
+    if (stale.length) await Promise.all(stale.map(b => DB.del('backups', b.id)));
+  }
+  async function createBackup(kind, opts) {
+    opts = opts || {};
+    if (backupInFlight) return backupInFlight;
+    backupInFlight = (async () => {
+      const data = await Ex.dumpAll();
+      const fingerprint = backupFingerprint(data);
+      if (!opts.force && App._backupFingerprint && App._backupFingerprint === fingerprint) return { created: false, reason: 'unchanged' };
+      const now = Date.now();
+      const rec = {
+        id: U.uid(), kind: kind || 'manual', label: opts.label || backupLabel(kind, opts.detail, now),
+        createdAt: now, data: data
+      };
+      await DB.put('backups', rec);
+      App._backupFingerprint = fingerprint;
+      App.settings.lastAutoBackupAt = now;
+      await DB.put('settings', { key: 'lastAutoBackupAt', value: now });
+      if (kind === 'daily') {
+        App.settings.lastBackupDate = U.todayStr();
+        await DB.put('settings', { key: 'lastBackupDate', value: App.settings.lastBackupDate });
+      }
+      await pruneBackups();
+      return { created: true, record: rec };
+    })();
+    try { return await backupInFlight; } finally { backupInFlight = null; }
+  }
+  async function initBackupFingerprint() {
+    const all = (await DB.getAll('backups')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const latest = all.find(b => b && b.data);
+    if (latest) App._backupFingerprint = backupFingerprint(latest.data);
+  }
   async function autoBackup() {
     const today = U.todayStr();
-    if (App.settings.lastBackupDate === today) return;
-    try {
-      const data = await Ex.dumpAll();
-      await DB.put('backups', { id: U.uid(), label: '自动备份 ' + today, createdAt: Date.now(), data: data });
-      const all = (await DB.getAll('backups')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      const excess = all.slice(15);
-      await Promise.all(excess.map(b => DB.del('backups', b.id)));
-      App.settings.lastBackupDate = today;
-      await DB.put('settings', { key: 'lastBackupDate', value: today });
-    } catch (e) { /* 静默失败，下次再试 */ }
+    if (App.settings.lastBackupDate === today) return { created: false, reason: 'already-daily' };
+    try { return await createBackup('daily', { force: true }); } catch (e) { return { created: false, reason: 'error' }; }
   }
+  async function timedAutoBackup() {
+    if (document.hidden) return { created: false, reason: 'hidden' };
+    const now = Date.now();
+    const intervalMs = Math.max(5, Math.min(240, Number(App.settings.backupIntervalMinutes) || 30)) * 60 * 1000;
+    const lastCheck = Number(App.settings.lastAutoBackupCheckAt || App.settings.lastAutoBackupAt || 0);
+    if (lastCheck && now - lastCheck < intervalMs) return { created: false, reason: 'not-due' };
+    try {
+      const result = await createBackup('timed');
+      App.settings.lastAutoBackupCheckAt = now;
+      await DB.put('settings', { key: 'lastAutoBackupCheckAt', value: now });
+      return result;
+    } catch (e) { return { created: false, reason: 'error' }; }
+  }
+  function startBackupScheduler() {
+    if (backupTimer) clearInterval(backupTimer);
+    backupTimer = setInterval(() => { timedAutoBackup(); }, 60 * 1000);
+  }
+  App.createBackup = createBackup;
+  App.prepareForClose = async () => {
+    if (Views.editor) await Views.editor.flush();
+    const last = Number(App.settings.lastAutoBackupAt || 0);
+    if (Date.now() - last < 10 * 60 * 1000) return { created: false, reason: 'recent-backup' };
+    try { return await createBackup('exit'); } catch (e) { return { created: false, reason: 'error' }; }
+  };
 
   /* ---------- 启动 ---------- */
   async function boot() {
@@ -396,6 +481,7 @@
           if (Views.editor) { Views.editor.flush(); if (Views.editor.stopTimer) Views.editor.stopTimer(); }
         } else {
           if (Views.editor && Views.editor.resumeTimer) Views.editor.resumeTimer();
+          timedAutoBackup();
         }
       });
       window.addEventListener('beforeunload', () => {
@@ -409,7 +495,9 @@
       });
 
       route();
+      await initBackupFingerprint();
       autoBackup();
+      startBackupScheduler();
 
       /* 无边框窗口：顶栏作为拖拽区，双击最大化 */
       if (window.mogeWindow) {

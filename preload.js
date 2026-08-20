@@ -7,3 +7,9 @@ contextBridge.exposeInMainWorld('mogeWindow', {
   toggleMaximize: () => ipcRenderer.send('window-maximize-toggle'),
   close: () => ipcRenderer.send('window-close')
 });
+
+contextBridge.exposeInMainWorld('mogeAI', {
+  keyStatus: () => ipcRenderer.invoke('ai-key-status'),
+  saveKey: key => ipcRenderer.invoke('ai-save-key', key),
+  chat: (config, messages) => ipcRenderer.invoke('ai-chat', config, messages)
+});

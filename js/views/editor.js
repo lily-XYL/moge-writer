@@ -199,7 +199,7 @@
     const total = App.workTotalWords();
     App.state.edOutline = App.state.edOutline !== false; /* 默认展开细纲 */
     el.innerHTML =
-      '<div class="editor-wrap">' +
+      '<div class="editor-wrap' + (window.AIWriter && !window.AIWriter.isOpen() ? ' ai-hidden' : '') + '">' +
       '<aside class="editor-side">' +
       '<div class="side-head">' +
       '<button class="btn small" data-action="goWorkFromEditor" title="返回作品">←</button>' +
@@ -219,6 +219,7 @@
       '<button class="btn small" data-action="edToggleCheck">检查</button>' +
       '<button class="btn small" data-action="edHistory">历史</button>' +
       '<button class="btn small" data-action="edTogglePreview">预览</button>' +
+      '<button class="btn small' + (window.AIWriter && window.AIWriter.isOpen() ? ' active' : '') + '" id="ed-ai-toggle" data-action="aiToggleSidebar" aria-expanded="' + (window.AIWriter && window.AIWriter.isOpen() ? 'true' : 'false') + '">✨ AI</button>' +
       '<span class="topbar-spacer"></span>' +
       '<span class="save-state" id="ed-save-state">—</span>' +
       '<button class="btn small primary" data-action="edFocusMode">⛶ 码字模式</button>' +
@@ -246,6 +247,7 @@
       '<span>全书 <b>' + U.wcText(total) + '</b> 字</span>' +
       '</div>' +
       '</div>' +
+      (window.AIWriter ? window.AIWriter.sidebarHtml() : '') +
       '</div>' +
       '<div class="check-drawer" id="check-drawer"><div class="cd-head"><b>🔍 检查</b><span class="topbar-spacer"></span>' +
       '<button class="btn small" data-action="edCheckRun">重新检查</button>' +
