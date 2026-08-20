@@ -44,7 +44,7 @@
         '<div class="card" style="margin-top:16px;max-width:420px">' +
         '<div class="card-title">每日目标</div>' +
         '<input class="input" type="number" min="0" data-action="statGoal" value="' + (w.dailyGoal || '') + '" placeholder="当前全局默认 ' + (App.settings.defaultGoal || 3000) + ' 字">' +
-        '<div class="hint">失焦自动保存；留空则使用全局默认目标</div></div>';
+        '<div class="hint">留空则使用全局默认目标</div></div>';
     }
   };
 

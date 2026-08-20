@@ -228,7 +228,7 @@
         ? '<div class="outline-panel"><div class="op-grid">' +
           '<div><div class="label">📋 本章细纲</div><textarea id="editor-outline" rows="3" placeholder="本章写什么：剧情推进、冲突爆发、伏笔埋设、结尾钩子…">' + U.escapeHtml(ch.outline || '') + '</textarea></div>' +
           '<div><div class="label">📝 写作备注</div><textarea id="editor-notes" rows="3" placeholder="给自己看的备注：待修改事项、数据对照、灵感补充…">' + U.escapeHtml(ch.notes || '') + '</textarea></div>' +
-          '</div><div class="hint" style="padding:2px 0 0">失焦自动保存</div></div>'
+          '</div></div>'
         : '') +
       '<div class="editor-content-wrap"><div class="editor-paper">' +
       '<textarea id="editor-textarea" placeholder="开始写作吧…">' + U.escapeHtml(ch.content || '') + '</textarea>' +
