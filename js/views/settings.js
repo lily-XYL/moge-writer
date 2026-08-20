@@ -72,6 +72,7 @@
         '<label class="label" style="margin-top:10px">定时 / 退出 / 操作前备份保留（份）</label>' +
         '<input class="input" type="number" min="5" max="100" step="1" data-action="saveSetting" data-key="backupKeepCount" value="' + (s.backupKeepCount || 30) + '">' +
         '</div>' +
+        externalExportCard(s) +
         '<div class="card"><div class="card-title">数据备份</div>' +
         '<div class="hint" style="margin-bottom:10px">自动快照存于本机数据库；导入覆盖、恢复备份与批量替换前会先创建“操作前备份”。重要版本仍建议定期导出 JSON 文件到其他磁盘或云盘。</div>' +
         '<div class="btn-row" style="margin-bottom:14px">' +
@@ -103,6 +104,24 @@
     }
   };
 
+  function externalExportCard(s) {
+    if (!window.mogeBackup) {
+      return '<div class="card"><div class="card-title">外部自动导出</div><div class="hint">此功能仅支持 Windows EXE 版。网页版仍可使用“导出全部数据(JSON)”手动保存备份。</div></div>';
+    }
+    const enabled = !!s.externalExportEnabled;
+    const folder = s.externalExportFolder || '';
+    const last = s.lastExternalExportAt ? U.fmtDate(s.lastExternalExportAt) : '尚未导出';
+    return '<div class="card"><div class="card-title">外部自动导出</div>' +
+      '<div class="hint" style="margin-bottom:10px">开启后，软件运行中或下次打开时会检查是否到期，并将完整 JSON 备份写入所选文件夹。软件关闭期间不会在后台运行。</div>' +
+      '<label class="check-row"><input type="checkbox" data-action="externalExportToggle"' + (enabled ? ' checked' : '') + '> 启用定期导出到外部文件夹</label>' +
+      '<label class="label" style="margin-top:10px">导出间隔（天）</label>' +
+      '<input class="input" type="number" min="1" max="365" step="1" data-action="externalExportInterval" value="' + (s.externalExportIntervalDays || 7) + '">' +
+      '<label class="label" style="margin-top:10px">目标文件夹</label>' +
+      '<div class="btn-row"><input class="input" readonly value="' + U.escapeHtml(folder || '尚未选择文件夹') + '" style="flex:1;min-width:0"><button class="btn" data-action="externalExportPickFolder">选择文件夹</button></div>' +
+      '<div class="hint" style="margin-top:8px">上次外部导出：' + U.escapeHtml(last) + '</div>' +
+      '<div class="btn-row" style="margin-top:10px"><button class="btn small" data-action="externalExportNow">立即导出到该文件夹</button></div></div>';
+  }
+
   function fontOpt(v, label, s) {
     return '<option value="' + v + '"' + ((s.fontFamily || 'serif') === v ? ' selected' : '') + '>' + label + '</option>';
   }
@@ -125,6 +144,7 @@
     if (key === 'defaultGoal') val = parseInt(val, 10) || 0;
     if (key === 'backupIntervalMinutes') val = Math.max(5, Math.min(240, parseInt(val, 10) || 30));
     if (key === 'backupKeepCount') val = Math.max(5, Math.min(100, parseInt(val, 10) || 30));
+    if (key === 'externalExportIntervalDays') val = Math.max(1, Math.min(365, parseInt(val, 10) || 7));
     if (key === 'sensitiveCustom') val = val.split('\n').map(x => x.trim()).filter(Boolean);
     if (key === 'typoCustom') val = val.split('\n').map(x => x.trim()).filter(Boolean).map(line => {
       const parts = line.split(/[,，]/);
@@ -137,6 +157,41 @@
     if (key === 'fontSize') { const el = U.$('#fs-label'); if (el) el.textContent = val + 'px'; }
     if (key === 'lineHeight') { const el = U.$('#lh-label'); if (el) el.textContent = val; }
     UI.toast('已保存');
+  };
+
+  /* ---------- 外部自动导出 ---------- */
+  Actions['externalExportToggle'] = async t => {
+    App.settings.externalExportEnabled = !!t.checked;
+    await DB.put('settings', { key: 'externalExportEnabled', value: App.settings.externalExportEnabled });
+    if (App.settings.externalExportEnabled && !App.settings.externalExportFolder) UI.toast('请先选择外部导出文件夹', 'warn');
+    UI.toast(App.settings.externalExportEnabled ? '已启用外部自动导出' : '已关闭外部自动导出');
+  };
+  Actions['externalExportInterval'] = async t => {
+    const days = Math.max(1, Math.min(365, parseInt(t.value, 10) || 7));
+    t.value = days;
+    App.settings.externalExportIntervalDays = days;
+    await DB.put('settings', { key: 'externalExportIntervalDays', value: days });
+    UI.toast('外部导出间隔已保存');
+  };
+  Actions['externalExportPickFolder'] = async () => {
+    if (!window.mogeBackup) { UI.toast('此功能仅支持 Windows EXE 版', 'warn'); return; }
+    try {
+      const result = await window.mogeBackup.chooseFolder();
+      if (result.canceled || !result.folderPath) return;
+      App.settings.externalExportFolder = result.folderPath;
+      await DB.put('settings', { key: 'externalExportFolder', value: result.folderPath });
+      Views.settings.render(U.$('#main'));
+      UI.toast('已选择外部导出文件夹');
+    } catch (e) { UI.toast('选择文件夹失败', 'err'); }
+  };
+  Actions['externalExportNow'] = async () => {
+    if (!window.mogeBackup) { UI.toast('此功能仅支持 Windows EXE 版', 'warn'); return; }
+    if (!App.settings.externalExportFolder) { UI.toast('请先选择外部导出文件夹', 'warn'); return; }
+    const result = await App.writeExternalExport(true);
+    if (result.exported) {
+      UI.toast('已导出：' + result.filePath);
+      Views.settings.render(U.$('#main'));
+    } else UI.toast('导出失败：' + (result.error || '请检查文件夹权限'), 'err');
   };
 
   /* ---------- 词表导入导出 ---------- */

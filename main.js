@@ -98,29 +98,82 @@ ipcMain.on('window-minimize', () => { if (win) win.minimize(); });
 ipcMain.on('window-maximize-toggle', () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
 ipcMain.on('window-close', () => { if (win) win.close(); });
 
+/* ============ 外部备份文件夹：仅桌面版允许用户选择后写入 JSON ============ */
+ipcMain.handle('backup-select-folder', async () => {
+  const target = win && !win.isDestroyed() ? win : undefined;
+  const result = await dialog.showOpenDialog(target, {
+    title: '选择自动导出备份文件夹',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  return { canceled: !!result.canceled, folderPath: result.canceled ? '' : String((result.filePaths || [])[0] || '') };
+});
+ipcMain.handle('backup-write-external', (event, payload) => {
+  const folderPath = String(payload && payload.folderPath || '').trim();
+  const content = String(payload && payload.content || '');
+  const requested = String(payload && payload.fileName || '墨阁自动备份.json');
+  if (!folderPath || !path.isAbsolute(folderPath)) throw new Error('外部备份文件夹无效。');
+  if (!content) throw new Error('没有可导出的备份数据。');
+  const dir = path.resolve(folderPath);
+  const fileName = path.basename(requested).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120) || '墨阁自动备份.json';
+  const target = path.join(dir, fileName);
+  if (path.dirname(target) !== dir) throw new Error('导出文件路径无效。');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, content, { encoding: 'utf8', mode: 0o600 });
+  return { filePath: target, bytes: Buffer.byteLength(content, 'utf8') };
+});
+
 /* ============ AI 写作助手：主进程代理调用，密钥仅保存在本机 ============ */
 function aiKeyPath() { return path.join(app.getPath('userData'), 'ai-writing-key.bin'); }
-function aiReadKey() {
+function aiReadKeyRecord() {
   try {
     const file = aiKeyPath();
-    if (!fs.existsSync(file)) return '';
+    if (!fs.existsSync(file)) return { keys: {}, legacy: '' };
     const raw = fs.readFileSync(file);
     const text = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(raw) : raw.toString('utf8');
-    /* 兼容 v1.5.0 之前按服务保存的 JSON 密钥文件，优先迁移自定义密钥。 */
     try {
-      const legacy = JSON.parse(text);
-      if (legacy && typeof legacy === 'object') return String(legacy.custom || legacy.deepseek || Object.values(legacy)[0] || '').trim();
-    } catch (e) { /* 新格式为直接保存的密钥文本。 */ }
-    return String(text || '').trim();
-  } catch (e) { return ''; }
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && parsed.version === 2 && parsed.keys && typeof parsed.keys === 'object') {
+        const keys = {};
+        Object.keys(parsed.keys).forEach(id => { const key = String(parsed.keys[id] || '').trim(); if (key) keys[id] = key; });
+        return { keys: keys, legacy: '' };
+      }
+      /* 兼容 v1.5.0 的按服务 JSON 和 v1.5.4 的单密钥文本。 */
+      if (parsed && typeof parsed === 'object') {
+        return { keys: {}, legacy: String(parsed.custom || parsed.deepseek || Object.values(parsed)[0] || '').trim() };
+      }
+    } catch (e) { /* 单密钥文本格式，见下方返回。 */ }
+    return { keys: {}, legacy: String(text || '').trim() };
+  } catch (e) { return { keys: {}, legacy: '' }; }
 }
-function aiWriteKey(key) {
+function aiReadKey(profileId) {
+  const record = aiReadKeyRecord();
+  const id = String(profileId || 'legacy').trim() || 'legacy';
+  if (record.keys[id]) return record.keys[id];
+  /* 旧版唯一密钥只对旧版/默认 DeepSeek 档案做兼容读取，保存新档案后即迁移。 */
+  return (id === 'legacy' || id === 'deepseek') ? record.legacy : '';
+}
+function aiMigrateLegacyKey(profileId) {
+  const id = String(profileId || 'legacy').trim() || 'legacy';
+  const record = aiReadKeyRecord();
+  if (!record.legacy || record.keys[id]) return !!record.keys[id];
+  const keys = Object.assign({}, record.keys, { [id]: record.legacy });
+  const text = JSON.stringify({ version: 2, keys: keys });
+  const raw = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : Buffer.from(text, 'utf8');
+  fs.writeFileSync(aiKeyPath(), raw, { mode: 0o600 });
+  return true;
+}
+function aiWriteKey(profileId, key) {
+  const id = String(profileId || 'legacy').trim() || 'legacy';
   const trimmed = String(key || '').trim();
   const file = aiKeyPath();
-  if (!trimmed) { try { fs.unlinkSync(file); } catch (e) {} return false; }
-  const raw = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(trimmed) : Buffer.from(trimmed, 'utf8');
+  const record = aiReadKeyRecord();
+  const keys = Object.assign({}, record.keys);
+  if (trimmed) keys[id] = trimmed; else delete keys[id];
+  if (!Object.keys(keys).length) { try { fs.unlinkSync(file); } catch (e) {} return false; }
+  const text = JSON.stringify({ version: 2, keys: keys });
+  const raw = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : Buffer.from(text, 'utf8');
   fs.writeFileSync(file, raw, { mode: 0o600 });
-  return true;
+  return !!trimmed;
 }
 function aiEndpoint(baseUrl) {
   const raw = String(baseUrl || '').trim().replace(/\/+$/, '');
@@ -129,10 +182,11 @@ function aiEndpoint(baseUrl) {
   if (parsed.protocol !== 'https:' && !localHttp) throw new Error('仅允许 HTTPS API 地址；本地服务可使用 localhost HTTP 地址。');
   return /\/chat\/completions$/i.test(parsed.pathname) ? raw : raw + '/chat/completions';
 }
-ipcMain.handle('ai-key-status', () => ({ configured: !!aiReadKey(), encrypted: safeStorage.isEncryptionAvailable() }));
-ipcMain.handle('ai-save-key', (event, key) => ({ configured: aiWriteKey(key), encrypted: safeStorage.isEncryptionAvailable() }));
+ipcMain.handle('ai-key-status', (event, profileId) => ({ configured: !!aiReadKey(profileId), encrypted: safeStorage.isEncryptionAvailable() }));
+ipcMain.handle('ai-migrate-legacy-key', (event, profileId) => ({ configured: aiMigrateLegacyKey(profileId), encrypted: safeStorage.isEncryptionAvailable() }));
+ipcMain.handle('ai-save-key', (event, profileId, key) => ({ configured: aiWriteKey(profileId, key), encrypted: safeStorage.isEncryptionAvailable() }));
 ipcMain.handle('ai-chat', async (event, config, messages) => {
-  const key = aiReadKey();
+  const key = aiReadKey(config && config.profileId);
   if (!key) throw new Error('请先在 AI 配置中保存 API Key。');
   const model = String(config && config.model || '').trim();
   if (!model) throw new Error('请填写模型名称。');
@@ -197,14 +251,18 @@ async function runAiUiTest() {
       await DB.put('characters', { id: 'ai-char', workId: 'ai-work', name: '沈舟', role: '主角', background: '设定特征文本：沈舟惧怕钟声。', createdAt: Date.now(), updatedAt: Date.now() });
       await DB.put('entries', { id: 'ai-entry', workId: 'ai-work', name: '失落王城', type: 'location', content: '地点设定特征文本：王城位于北境。', createdAt: Date.now(), updatedAt: Date.now() });
       stage = 'settings';
-      delete App.settings.aiConfig;
+      delete App.settings.aiConfig; delete App.settings.aiProfiles; delete App.settings.aiActiveProfileId;
       const defaultConfig = window.AIWriter.currentConfig();
-      App.settings.aiConfig = { provider: 'custom', baseUrl: 'http://127.0.0.1:${port}/v1', model: 'mock-writer', temperature: 0.7 };
+      App.settings.aiProfiles = [{ id: 'mock', name: '模拟 API', baseUrl: 'http://127.0.0.1:${port}/v1', model: 'mock-writer', temperature: 0.7 }];
+      App.settings.aiActiveProfileId = 'mock';
+      App.settings.aiConfig = Object.assign({ provider: 'custom' }, App.settings.aiProfiles[0]);
       App.settings.aiSidebarOpen = true;
+      await DB.put('settings', { key: 'aiProfiles', value: App.settings.aiProfiles });
+      await DB.put('settings', { key: 'aiActiveProfileId', value: 'mock' });
       await DB.put('settings', { key: 'aiConfig', value: App.settings.aiConfig });
       await DB.put('settings', { key: 'aiSidebarOpen', value: true });
       stage = 'save-key';
-      await window.mogeAI.saveKey('ai-ui-test-key');
+      await window.mogeAI.saveKey('mock', 'ai-ui-test-key');
       stage = 'editor-render';
       location.hash = '#/e/ai-work/ai-chapter';
       await delay(900);
@@ -213,7 +271,7 @@ async function runAiUiTest() {
       const wrap = document.querySelector('.editor-wrap');
       const panel = document.querySelector('#ai-assist-panel');
       const contextInputs = Array.from(document.querySelectorAll('.ai-context-check input'));
-      const initial = { outlineColumns: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length, shellColumns: getComputedStyle(wrap).gridTemplateColumns.split(' ').filter(Boolean).length, sidebar: !!sidebar, panel: !!panel, tasks: document.querySelectorAll('.ai-task-grid [data-action="aiTask"]').length, contextControls: contextInputs.length, contextDefaultOff: contextInputs.every(input => !input.checked) };
+      const initial = { outlineColumns: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length, shellColumns: getComputedStyle(wrap).gridTemplateColumns.split(' ').filter(Boolean).length, sidebar: !!sidebar, panel: !!panel, tasks: document.querySelectorAll('.ai-task-grid [data-action="aiTask"]').length, contextControls: contextInputs.length, rangeButton: !!document.querySelector('[data-action="aiOpenChapterRange"]'), contextDefaultOff: contextInputs.every(input => !input.checked) };
       await Actions.aiHideSidebar();
       const hidden = wrap.classList.contains('ai-hidden') && getComputedStyle(sidebar).display === 'none';
       await Actions.aiToggleSidebar();
@@ -221,6 +279,7 @@ async function runAiUiTest() {
       stage = 'configuration-modal';
       await Actions.aiOpenConfig();
       const hasProviderSelector = !!document.querySelector('#ai-provider');
+      const hasProfileSelector = !!document.querySelector('#ai-profile-select');
       const hasBaseUrl = !!document.querySelector('#ai-base-url');
       UI.closeModal();
       const text = document.querySelector('#editor-textarea'); text.focus(); text.setSelectionRange(0, 5);
@@ -232,17 +291,29 @@ async function runAiUiTest() {
       const body = document.querySelector('#editor-textarea').value;
       const selectedTask = document.querySelector('.ai-generate').dataset.task;
       stage = 'context-selection';
+      Actions.aiOpenChapterRange(); await delay(80);
+      for (const input of document.querySelectorAll('input[data-ai-range-id]')) { input.checked = true; }
+      await Actions.aiRangeSave();
       for (const input of document.querySelectorAll('.ai-context-check input')) { input.checked = true; await Actions.aiContextToggle(input); }
       Actions.aiTask(document.querySelector('[data-action="aiTask"][data-task="continue"]'));
       stage = 'generation-context';
       await Actions.aiGenerate(document.querySelector('.ai-generate'));
-      return { initial, hidden, shownAgain, hasProviderSelector, hasBaseUrl, defaultConfig: defaultConfig, resultText, inserted: body.includes('模拟 AI 建议'), selectedTask: selectedTask, enabledContext: Array.from(document.querySelectorAll('.ai-context-check input')).every(input => input.checked), contextSummary: (document.querySelector('#ai-context-summary') || {}).textContent || '' };
+      stage = 'profile-isolation';
+      await Actions.aiOpenConfig(); await Actions.aiProfileNew(); await delay(80);
+      const secondaryId = document.querySelector('#ai-profile-id').value;
+      document.querySelector('#ai-profile-name').value = '备用 API';
+      document.querySelector('#ai-base-url').value = 'http://127.0.0.1:${port}/v1';
+      document.querySelector('#ai-model').value = 'mock-writer';
+      await window.mogeAI.saveKey(secondaryId, 'ai-ui-second-key');
+      await Actions.aiSaveConfig();
+      const keyIsolation = (await window.mogeAI.keyStatus('mock')).configured && (await window.mogeAI.keyStatus(secondaryId)).configured;
+      return { initial, hidden, shownAgain, hasProviderSelector, hasProfileSelector, hasBaseUrl, defaultConfig: defaultConfig, profiles: window.AIWriter.allProfiles(), keyIsolation: keyIsolation, resultText, inserted: body.includes('模拟 AI 建议'), selectedTask: selectedTask, enabledContext: Array.from(document.querySelectorAll('.ai-context-check input')).every(input => input.checked), contextSummary: (document.querySelector('#ai-context-summary') || {}).textContent || '' };
       } catch (e) { return { failure: true, stage: stage, message: String((e && e.message) || e), stack: String((e && e.stack) || '') }; }
     })()`);
     if (result.failure) throw new Error(JSON.stringify(result));
     const defaultPrompt = receivedPrompts[0] || '';
     const contextPrompt = receivedPrompts[1] || '';
-    const ok = result.initial.outlineColumns === 2 && result.initial.shellColumns === 3 && result.initial.sidebar && result.initial.panel && result.initial.tasks === 4 && result.initial.contextControls === 4 && result.initial.contextDefaultOff && result.hidden && result.shownAgain && !result.hasProviderSelector && result.hasBaseUrl && result.defaultConfig.baseUrl === 'https://api.deepseek.com' && result.defaultConfig.model === 'deepseek-chat' && result.resultText.includes('模拟 AI 建议') && result.inserted && result.selectedTask === 'polish' && result.enabledContext && result.contextSummary.includes('上一章') && !defaultPrompt.includes('上一章特征文本') && !defaultPrompt.includes('大纲特征文本') && contextPrompt.includes('上一章特征文本') && contextPrompt.includes('下一章特征文本') && contextPrompt.includes('大纲特征文本') && contextPrompt.includes('设定特征文本');
+    const ok = result.initial.outlineColumns === 2 && result.initial.shellColumns === 3 && result.initial.sidebar && result.initial.panel && result.initial.tasks === 4 && result.initial.contextControls === 2 && result.initial.rangeButton && result.initial.contextDefaultOff && result.hidden && result.shownAgain && !result.hasProviderSelector && result.hasProfileSelector && result.hasBaseUrl && result.defaultConfig.baseUrl === 'https://api.deepseek.com' && result.defaultConfig.model === 'deepseek-chat' && result.profiles.length === 2 && result.profiles.some(p => p.id === 'mock') && result.profiles.some(p => p.name === '备用 API') && result.keyIsolation && result.resultText.includes('模拟 AI 建议') && result.inserted && result.selectedTask === 'polish' && result.enabledContext && result.contextSummary.includes('前章暗号') && !defaultPrompt.includes('上一章特征文本') && !defaultPrompt.includes('大纲特征文本') && contextPrompt.includes('上一章特征文本') && contextPrompt.includes('下一章特征文本') && contextPrompt.includes('大纲特征文本') && contextPrompt.includes('设定特征文本');
     console.log('AI_UI_RESULT ' + JSON.stringify({ ok, result }));
     app.exit(ok ? 0 : 1);
   } catch (e) {
@@ -253,7 +324,9 @@ async function runAiUiTest() {
 
 /* ============ 自动备份回归测试：仅在命令行 --backup-test 时运行 ============ */
 async function runBackupTest() {
+  let externalDir = '';
   try {
+    externalDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'moge-external-export-'));
     const wc = win.webContents;
     await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('load timeout')), 20000);
@@ -266,7 +339,7 @@ async function runBackupTest() {
         const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         stage = 'database';
         await DB.wipe();
-        Object.assign(App.settings, { backupIntervalMinutes: 5, backupKeepCount: 5, lastBackupDate: null, lastAutoBackupAt: 0, lastAutoBackupCheckAt: 0 });
+        Object.assign(App.settings, { backupIntervalMinutes: 5, backupKeepCount: 5, lastBackupDate: null, lastAutoBackupAt: 0, lastAutoBackupCheckAt: 0, externalExportEnabled: true, externalExportFolder: ${JSON.stringify(externalDir)}, externalExportIntervalDays: 1, lastExternalExportAt: 0, lastExternalExportCheckAt: 0 });
         const work = { id: 'backup-work', title: '备份测试作品', sort: 0, createdAt: Date.now(), updatedAt: Date.now() };
         const chapter = { id: 'backup-chapter', workId: 'backup-work', title: '第一章', content: '初始内容', outline: '', notes: '', wordCount: 4, sort: 0, createdAt: Date.now(), updatedAt: Date.now() };
         await DB.put('works', work); await DB.put('chapters', chapter);
@@ -290,19 +363,43 @@ async function runBackupTest() {
         for (let i = 0; i < 7; i++) await App.createBackup('safety', { force: true, detail: '测试 ' + i });
         const backups = await DB.getAll('backups');
         const kinds = backups.reduce((map, b) => { map[b.kind] = (map[b.kind] || 0) + 1; return map; }, {});
+        stage = 'external-export';
+        const externalFirst = await App.writeExternalExport(false);
+        const externalNotDue = await App.writeExternalExport(false);
+        App.settings.lastExternalExportAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+        const externalDue = await App.writeExternalExport(false);
+        stage = 'chapter-tags';
+        App.state.selChapterId = 'backup-chapter'; App.state.chapterTagFilter = '';
+        location.hash = '#/w/backup-work/chapters'; await delay(500);
+        const tagInput = document.querySelector('[data-action="chSaveTags"]');
+        if (!tagInput) throw new Error('chapter tag input missing');
+        tagInput.value = '主线，待修'; await Actions.chSaveTags(tagInput); await delay(120);
+        const tagChip = Array.from(document.querySelectorAll('[data-action="chapterTagFilter"]')).find(el => el.dataset.tag === '主线');
+        if (!tagChip) throw new Error('chapter tag filter missing');
+        Actions.chapterTagFilter(tagChip); await delay(120);
+        const tagged = await DB.get('chapters', 'backup-chapter');
+        const tagSaved = Array.isArray(tagged.tags) && tagged.tags.includes('主线') && tagged.tags.includes('待修');
+        const tagFiltered = (document.querySelector('#chapter-tree-wrap') || {}).textContent.includes('第一章');
         stage = 'settings-ui';
         location.hash = '#/settings'; await delay(450);
-        const configInputs = !!document.querySelector('[data-key="backupIntervalMinutes"]') && !!document.querySelector('[data-key="backupKeepCount"]');
-        return { first: !!first.created, duplicate: duplicate.reason === 'unchanged', changed: !!changed.created, exit: !!exit.created, restored: restored, daily: kinds.daily || 0, rolling: (kinds.timed || 0) + (kinds.exit || 0) + (kinds.safety || 0), configInputs: configInputs, labels: backups.every(b => !!b.label && !!b.kind) };
+        const configInputs = !!document.querySelector('[data-key="backupIntervalMinutes"]') && !!document.querySelector('[data-key="backupKeepCount"]') && !!document.querySelector('[data-action="externalExportToggle"]') && !!document.querySelector('[data-action="externalExportInterval"]');
+        return { first: !!first.created, duplicate: duplicate.reason === 'unchanged', changed: !!changed.created, exit: !!exit.created, restored: restored, daily: kinds.daily || 0, rolling: (kinds.timed || 0) + (kinds.exit || 0) + (kinds.safety || 0), configInputs: configInputs, labels: backups.every(b => !!b.label && !!b.kind), externalFirst: !!externalFirst.exported, externalNotDue: externalNotDue.reason === 'not-due', externalDue: !!externalDue.exported, externalPath: externalDue.filePath || externalFirst.filePath || '', tagSaved: tagSaved, tagFiltered: tagFiltered };
       } catch (e) { return { failure: true, stage: stage, message: String((e && e.message) || e), stack: String((e && e.stack) || '') }; }
     })()`);
     if (result.failure) throw new Error(JSON.stringify(result));
-    const ok = result.first && result.duplicate && result.changed && result.exit && result.restored && result.daily === 7 && result.rolling === 5 && result.configInputs && result.labels;
-    console.log('BACKUP_RESULT ' + JSON.stringify({ ok, result }));
+    let externalValid = false;
+    try {
+      const data = result.externalPath && fs.existsSync(result.externalPath) ? JSON.parse(fs.readFileSync(result.externalPath, 'utf8')) : null;
+      externalValid = !!data && data.app === 'moge-studio' && data.version === 2 && Array.isArray(data.chapters) && data.chapters.length === 1;
+    } catch (e) { externalValid = false; }
+    const ok = result.first && result.duplicate && result.changed && result.exit && result.restored && result.daily === 7 && result.rolling === 5 && result.configInputs && result.labels && result.externalFirst && result.externalNotDue && result.externalDue && externalValid && result.tagSaved && result.tagFiltered;
+    console.log('BACKUP_RESULT ' + JSON.stringify({ ok, result, externalValid }));
     app.exit(ok ? 0 : 1);
   } catch (e) {
     console.error('BACKUP_ERROR ' + (e && e.stack || e));
     app.exit(1);
+  } finally {
+    if (externalDir) { try { fs.rmSync(externalDir, { recursive: true, force: true }); } catch (e) {} }
   }
 }
 

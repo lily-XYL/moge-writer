@@ -8,8 +8,14 @@ contextBridge.exposeInMainWorld('mogeWindow', {
   close: () => ipcRenderer.send('window-close')
 });
 
+contextBridge.exposeInMainWorld('mogeBackup', {
+  chooseFolder: () => ipcRenderer.invoke('backup-select-folder'),
+  writeExternal: payload => ipcRenderer.invoke('backup-write-external', payload)
+});
+
 contextBridge.exposeInMainWorld('mogeAI', {
-  keyStatus: () => ipcRenderer.invoke('ai-key-status'),
-  saveKey: key => ipcRenderer.invoke('ai-save-key', key),
+  keyStatus: profileId => ipcRenderer.invoke('ai-key-status', profileId),
+  migrateLegacyKey: profileId => ipcRenderer.invoke('ai-migrate-legacy-key', profileId),
+  saveKey: (profileId, key) => ipcRenderer.invoke('ai-save-key', profileId, key),
   chat: (config, messages) => ipcRenderer.invoke('ai-chat', config, messages)
 });

@@ -5,10 +5,27 @@
   const D = window.Data;
   const V = Views;
 
-  /* ---------- 章节树 HTML ---------- */
-  function treeHTML() {
+  /* ---------- 章节标签与章节树 ---------- */
+  function chapterTags(c) {
+    const raw = Array.isArray(c && c.tags) ? c.tags : String(c && c.tags || '').split(/[,，\n]/);
+    return Array.from(new Set(raw.map(x => String(x || '').trim()).filter(Boolean))).slice(0, 12);
+  }
+  function allChapterTags() {
+    return Array.from(new Set((App.data.chapters || []).flatMap(chapterTags))).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }
+  function chapterMatchesTag(c) {
+    const filter = App.state.chapterTagFilter || '';
+    return !filter || chapterTags(c).indexOf(filter) !== -1;
+  }
+  function tagFilterHtml() {
+    const active = App.state.chapterTagFilter || '';
+    const chips = [''].concat(allChapterTags()).map(tag => '<button class="chip' + (tag === active ? ' active' : '') + '" data-action="chapterTagFilter" data-tag="' + U.escapeHtml(tag) + '">' + U.escapeHtml(tag || '全部标签') + '</button>').join('');
+    return '<div class="chapter-tag-filter"><span class="hint">筛选标签</span><div class="chapter-tag-chips">' + chips + '</div></div>';
+  }
+  function treeHTML(withFilter) {
+    const filtering = !!withFilter && !!(App.state.chapterTagFilter || '');
     const vols = App.data.volumes;
-    const chs = App.data.chapters;
+    const chs = filtering ? App.data.chapters.filter(chapterMatchesTag) : App.data.chapters;
     const collapsed = App.state.collapsedVols || [];
     const byVol = {};
     vols.forEach(v => { byVol[v.id] = v; });
@@ -17,6 +34,7 @@
     let html = '<div class="tree">';
     vols.forEach(v => {
       const list = chs.filter(c => c.volumeId === v.id).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+      if (filtering && !list.length) return;
       const isCollapsed = collapsed.indexOf(v.id) !== -1;
       html += '<div class="vol' + (isCollapsed ? ' collapsed' : '') + '" data-action="toggleVol" data-id="' + v.id + '" draggable="true" data-drag="vol" title="拖动可排序卷">' +
         '<span class="arrow">▼</span><span style="flex:1">' + U.escapeHtml(v.title || '未命名卷') + '</span>' +
@@ -30,7 +48,7 @@
       if (!list.length) html += '<div class="chap" style="color:var(--text-3);font-size:12px;padding-left:42px">（空卷）</div>';
       html += '</div>';
     });
-    if (orphans.length || !vols.length) {
+    if (orphans.length || (!vols.length && !filtering)) {
       const isCollapsed = collapsed.indexOf('__orphan__') !== -1;
       html += '<div class="vol' + (isCollapsed ? ' collapsed' : '') + '" data-action="toggleVol" data-id="__orphan__" draggable="false">' +
         '<span class="arrow">▼</span><span style="flex:1">未分卷</span><span class="count">' + orphans.length + '章</span></div>';
@@ -40,19 +58,22 @@
       html += '</div>';
     }
     html += '</div>';
+    if (filtering && !chs.length) html += '<div class="empty" style="padding:18px">没有带“' + U.escapeHtml(App.state.chapterTagFilter) + '”标签的章节</div>';
     return html;
   }
 
   function chapRow(c, selected) {
+    const tags = chapterTags(c).slice(0, 2).map(tag => '<span class="chapter-mini-tag">' + U.escapeHtml(tag) + '</span>').join('');
     return '<div class="chap' + (c.id === selected ? ' active' : '') + '" id="tree-chap-' + c.id + '" data-action="selectChapter" data-id="' + c.id + '" draggable="true" data-drag="chap" title="拖动可排序/移动到其他卷">' +
       '<span class="c-dot ' + (c.status || 'draft') + '"></span>' +
       '<span class="c-title">' + U.escapeHtml(c.title || '无题') + '</span>' +
+      (tags ? '<span class="chapter-mini-tags">' + tags + '</span>' : '') +
       '<span class="c-words">' + U.wcText(c.wordCount || 0) + '</span></div>';
   }
 
   V.chapters = {
     renderTreeInto(container) {
-      if (container) container.innerHTML = treeHTML();
+      if (container) container.innerHTML = treeHTML(false);
       bindDragSort(container);
     },
     renderTab(el) {
@@ -66,7 +87,8 @@
         '<button class="btn small" data-action="newChapterInVol" data-vol="' + firstVol + '">＋ 新章节</button>' +
         '<button class="btn small" data-action="newVolume">＋ 新卷</button>' +
         '</div>' +
-        '<div class="tree-wrap" id="chapter-tree-wrap">' + treeHTML() + '</div>' +
+        tagFilterHtml() +
+        '<div class="tree-wrap" id="chapter-tree-wrap">' + treeHTML(true) + '</div>' +
         '</div>' +
         '<div class="chapter-detail" id="chapter-detail">' + (sel ? detailHTML(sel) : '<div class="empty">选择左侧章节查看详情</div>') + '</div>' +
         '</div>';
@@ -208,6 +230,7 @@
       '<textarea class="textarea" data-action="chSaveOutline" data-id="' + c.id + '" rows="4" placeholder="本章要写什么：剧情要点、冲突、伏笔、结尾钩子…">' + U.escapeHtml(c.outline || '') + '</textarea></div>' +
       '<div class="detail-field"><label class="label">写作备注</label>' +
       '<textarea class="textarea" data-action="chSaveNotes" data-id="' + c.id + '" rows="2" placeholder="给自己看的备注（数据、灵感、待修改事项）">' + U.escapeHtml(c.notes || '') + '</textarea></div>' +
+      '<div class="detail-field"><label class="label">章节标签</label><input class="input" data-action="chSaveTags" data-id="' + c.id + '" value="' + U.escapeHtml(chapterTags(c).join('，')) + '" placeholder="例如：主线，待修，战斗；以逗号分隔"></div>' +
       '<div class="detail-field"><label class="label">正文预览</label>' +
       '<div class="editor-preview" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px 16px;background:var(--bg-soft)">' +
       U.nl2p(c.content) + '</div></div>' +
@@ -304,7 +327,7 @@
     const volChs = App.data.chapters.filter(c => c.volumeId === vol);
     const c = {
       id: U.uid(), workId: App.state.workId, volumeId: vol, title: '', content: '', outline: '',
-      notes: '', status: 'draft', wordCount: 0, sort: App.nextSort(volChs),
+      notes: '', tags: [], status: 'draft', wordCount: 0, sort: App.nextSort(volChs),
       createdAt: Date.now(), updatedAt: Date.now(), publishedAt: null
     };
     await DB.put('chapters', c);
@@ -366,6 +389,20 @@
     await DB.put('chapters', c);
     await touchWork();
     flashSaved();
+  };
+  Actions['chSaveTags'] = async t => {
+    const c = App.data.chapters.find(x => x.id === t.dataset.id);
+    if (!c) return;
+    c.tags = Array.from(new Set(String(t.value || '').split(/[,，\n]/).map(x => x.trim()).filter(Boolean))).slice(0, 12);
+    c.updatedAt = Date.now();
+    await DB.put('chapters', c);
+    await touchWork();
+    if (U.$('.chapter-tag-filter')) rerenderTab(); else rerenderTree();
+    flashSaved();
+  };
+  Actions['chapterTagFilter'] = t => {
+    App.state.chapterTagFilter = t.dataset.tag || '';
+    rerenderTab();
   };
 
   function flashSaved() {

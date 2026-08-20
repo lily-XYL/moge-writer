@@ -19,7 +19,12 @@
     lastAutoBackupAt: 0,
     lastAutoBackupCheckAt: 0,
     backupIntervalMinutes: 30,
-    backupKeepCount: 30
+    backupKeepCount: 30,
+    externalExportEnabled: false,
+    externalExportFolder: '',
+    externalExportIntervalDays: 7,
+    lastExternalExportAt: 0,
+    lastExternalExportCheckAt: 0
   };
 
   /* ---------- 主题与字体 ---------- */
@@ -371,6 +376,7 @@
   const DAILY_BACKUP_KEEP_COUNT = 7;
   let backupTimer = null;
   let backupInFlight = null;
+  let externalExportInFlight = null;
 
   function backupKind(record) {
     if (record && record.kind) return record.kind;
@@ -389,7 +395,7 @@
     const normalized = {};
     Object.keys(data || {}).filter(key => key !== 'exportedAt').sort().forEach(key => {
       if (key === 'settings') {
-        normalized[key] = (data[key] || []).filter(row => row && ['lastBackupDate', 'lastAutoBackupAt', 'lastAutoBackupCheckAt'].indexOf(row.key) === -1);
+        normalized[key] = (data[key] || []).filter(row => row && ['lastBackupDate', 'lastAutoBackupAt', 'lastAutoBackupCheckAt', 'lastExternalExportAt', 'lastExternalExportCheckAt'].indexOf(row.key) === -1);
       } else normalized[key] = data[key];
     });
     return JSON.stringify(normalized);
@@ -450,11 +456,53 @@
       return result;
     } catch (e) { return { created: false, reason: 'error' }; }
   }
+  function externalExportFileName() {
+    return '墨阁自动导出-' + U.todayStr() + '.json';
+  }
+  async function writeExternalExport(force) {
+    if (!window.mogeBackup || !App.settings.externalExportEnabled || !App.settings.externalExportFolder) return { exported: false, reason: 'disabled' };
+    if (externalExportInFlight) return externalExportInFlight;
+    const now = Date.now();
+    const days = Math.max(1, Math.min(365, Number(App.settings.externalExportIntervalDays) || 7));
+    const dueMs = days * 24 * 60 * 60 * 1000;
+    const last = Number(App.settings.lastExternalExportAt || 0);
+    if (!force && last && now - last < dueMs) return { exported: false, reason: 'not-due' };
+    externalExportInFlight = (async () => {
+      try {
+        const data = await Ex.dumpAll();
+        const content = JSON.stringify(data, null, 2);
+        const result = await window.mogeBackup.writeExternal({
+          folderPath: App.settings.externalExportFolder,
+          fileName: externalExportFileName(),
+          content: content
+        });
+        App.settings.lastExternalExportAt = now;
+        App.settings.lastExternalExportCheckAt = now;
+        await DB.put('settings', { key: 'lastExternalExportAt', value: now });
+        await DB.put('settings', { key: 'lastExternalExportCheckAt', value: now });
+        return { exported: true, filePath: result.filePath, bytes: result.bytes };
+      } catch (e) {
+        App.settings.lastExternalExportCheckAt = now;
+        await DB.put('settings', { key: 'lastExternalExportCheckAt', value: now });
+        return { exported: false, reason: 'error', error: String(e && e.message || e) };
+      }
+    })();
+    try { return await externalExportInFlight; } finally { externalExportInFlight = null; }
+  }
+  async function timedExternalExport() {
+    if (document.hidden || !App.settings.externalExportEnabled || !App.settings.externalExportFolder) return { exported: false, reason: 'hidden-or-disabled' };
+    const now = Date.now();
+    const checkEvery = Math.min(60 * 60 * 1000, Math.max(5 * 60 * 1000, Number(App.settings.externalExportIntervalDays || 7) * 60 * 60 * 1000));
+    const lastCheck = Number(App.settings.lastExternalExportCheckAt || 0);
+    if (lastCheck && now - lastCheck < checkEvery) return { exported: false, reason: 'not-check-due' };
+    return writeExternalExport(false);
+  }
   function startBackupScheduler() {
     if (backupTimer) clearInterval(backupTimer);
-    backupTimer = setInterval(() => { timedAutoBackup(); }, 60 * 1000);
+    backupTimer = setInterval(() => { timedAutoBackup(); timedExternalExport(); }, 60 * 1000);
   }
   App.createBackup = createBackup;
+  App.writeExternalExport = writeExternalExport;
   App.prepareForClose = async () => {
     if (Views.editor) await Views.editor.flush();
     const last = Number(App.settings.lastAutoBackupAt || 0);
@@ -481,7 +529,7 @@
           if (Views.editor) { Views.editor.flush(); if (Views.editor.stopTimer) Views.editor.stopTimer(); }
         } else {
           if (Views.editor && Views.editor.resumeTimer) Views.editor.resumeTimer();
-          timedAutoBackup();
+          timedAutoBackup(); timedExternalExport();
         }
       });
       window.addEventListener('beforeunload', () => {
@@ -497,6 +545,7 @@
       route();
       await initBackupFingerprint();
       autoBackup();
+      writeExternalExport(false);
       startBackupScheduler();
 
       /* 无边框窗口：顶栏作为拖拽区，双击最大化 */

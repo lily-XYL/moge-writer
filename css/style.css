@@ -219,8 +219,10 @@ button { font-family: inherit; }
 }
 .tree .chap:hover { background: var(--bg-2); }
 .tree .chap.active { background: var(--accent-soft); border-left-color: var(--accent); color: var(--accent); font-weight: 600; }
-.tree .chap .c-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree .chap .c-words { font-size: 11px; color: var(--text-3); }
+.tree .chap .c-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree .chap .c-words { font-size: 11px; color: var(--text-3); flex-shrink: 0; }
+.chapter-mini-tags { display: flex; gap: 3px; max-width: 96px; overflow: hidden; flex-shrink: 1; }
+.chapter-mini-tag { padding: 1px 4px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tree .chap .c-dot { width: 6px; height: 6px; border-radius: 99px; flex-shrink: 0; }
 .tree .chap .c-dot.draft { background: var(--text-3); }
 .tree .chap .c-dot.final { background: var(--warn); }
@@ -233,6 +235,10 @@ button { font-family: inherit; }
 .tree .vol[data-drag] { cursor: grab; }
 .tree .chap[data-drag] { cursor: grab; }
 .tree-tools { padding: 8px 12px; display: flex; gap: 6px; border-bottom: 1px solid var(--line); }
+.chapter-tag-filter { padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
+.chapter-tag-filter > .hint { display: block; margin-bottom: 5px; font-size: 11px; }
+.chapter-tag-chips { display: flex; flex-wrap: wrap; gap: 5px; max-height: 62px; overflow: auto; }
+.chapter-tag-chips .chip { padding: 3px 7px; font-size: 11px; }
 
 /* ============ 章节管理布局 ============ */
 .chapters-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
@@ -299,10 +305,19 @@ body.editor-mode { overflow: hidden; }
 .ai-context-panel { border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--card); padding: 7px 8px; font-size: 12px; }
 .ai-context-panel summary { cursor: pointer; color: var(--text-2); font-weight: 600; user-select: none; }
 .ai-context-panel .hint { margin: 7px 0 5px; font-size: 11px; line-height: 1.45; }
+.ai-chapter-range-btn { width: 100%; margin: 2px 0 7px; font-size: 11px; }
 .ai-context-options { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }
 .ai-context-check { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--text-2); cursor: pointer; white-space: nowrap; }
 .ai-context-check input { margin: 0; accent-color: var(--accent); }
 .ai-context-summary { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 11px; line-height: 1.4; }
+.ai-range-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 8px; }
+.ai-range-tools .btn { font-size: 12px; }
+.ai-range-list { max-height: min(48vh, 420px); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--bg-soft); }
+.ai-range-row { display: grid; grid-template-columns: 18px 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px; }
+.ai-range-row:last-child { border-bottom: none; }
+.ai-range-row:hover { background: var(--card); }
+.ai-range-row input { margin: 0; accent-color: var(--accent); }
+.ai-range-index { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .ai-extra-prompt { width: 100%; min-height: 72px; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--card); color: var(--text); font: inherit; font-size: 12px; line-height: 1.5; resize: vertical; }
 .ai-generate { width: 100%; padding: 8px; font-size: 12px; }
 .ai-selection-note { font-size: 11px; }
